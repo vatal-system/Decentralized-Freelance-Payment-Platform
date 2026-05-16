@@ -17,8 +17,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import { SignedXdr, Keypair } from "@stellar/stellar-sdk";
-import { SigningError } from "@stellar/stellar-sdk/lib/errors";
+import { Keypair } from "@stellar/stellar-sdk";
 import { SignJWT } from "jose";
 import { prisma } from "../db";
 import { config } from "../config";

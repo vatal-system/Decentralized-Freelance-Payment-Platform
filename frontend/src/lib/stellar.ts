@@ -73,7 +73,7 @@ export async function simulateContractCall(
     fee: BASE_FEE,
     networkPassphrase,
   })
-    .addOperation(contract.call(method, ...(args as Parameters<typeof contract.call>).slice(1)))
+    .addOperation(contract.call(method, ...(args as import("@stellar/stellar-sdk").xdr.ScVal[])))
     .setTimeout(30)
     .build();
 
