@@ -1,0 +1,19 @@
+# Rust / Soroban
+target/
+*.wasm
+
+# Node
+node_modules/
+dist/
+.env
+
+# Prisma
+backend/prisma/migrations/*.sql
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Docker
+postgres_data/

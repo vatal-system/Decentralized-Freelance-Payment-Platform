@@ -1,0 +1,134 @@
+// Prisma schema for Stellar Freelance Payment Platform
+// Run: prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users — identified by their Stellar public key (G...)
+// ---------------------------------------------------------------------------
+model User {
+  id           String   @id @default(cuid())
+  stellarAddress String @unique
+  displayName  String?
+  bio          String?
+  createdAt    DateTime @default(now())
+
+  jobsAsClient     Job[]      @relation("ClientJobs")
+  jobsAsFreelancer Job[]      @relation("FreelancerJobs")
+  ratingsGiven     Rating[]   @relation("RatingsGiven")
+  ratingsReceived  Rating[]   @relation("RatingsReceived")
+}
+
+// ---------------------------------------------------------------------------
+// Jobs — mirrors on-chain escrow, enriched with off-chain metadata
+// ---------------------------------------------------------------------------
+model Job {
+  id              String    @id @default(cuid())
+  /// On-chain escrow ID returned by escrow.create()
+  escrowId        BigInt?   @unique
+  title           String
+  description     String
+  status          JobStatus @default(CREATED)
+
+  clientId        String
+  client          User      @relation("ClientJobs", fields: [clientId], references: [id])
+
+  freelancerId    String?
+  freelancer      User?     @relation("FreelancerJobs", fields: [freelancerId], references: [id])
+
+  totalAmountUsdc Decimal
+  milestones      Milestone[]
+  disputes        Dispute[]
+  ratings         Rating[]
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  expiresAt       DateTime?
+}
+
+enum JobStatus {
+  CREATED
+  FUNDED
+  ACTIVE
+  COMPLETED
+  DISPUTED
+  REFUNDED
+}
+
+// ---------------------------------------------------------------------------
+// Milestones
+// ---------------------------------------------------------------------------
+model Milestone {
+  id          String          @id @default(cuid())
+  jobId       String
+  job         Job             @relation(fields: [jobId], references: [id])
+  index       Int
+  amountUsdc  Decimal
+  description String?
+  status      MilestoneStatus @default(PENDING)
+  deadline    DateTime?
+  releasedAt  DateTime?
+}
+
+enum MilestoneStatus {
+  PENDING
+  RELEASED
+}
+
+// ---------------------------------------------------------------------------
+// Disputes
+// ---------------------------------------------------------------------------
+model Dispute {
+  id               String        @id @default(cuid())
+  /// On-chain dispute ID from dispute contract
+  onChainId        BigInt?       @unique
+  jobId            String
+  job              Job           @relation(fields: [jobId], references: [id])
+  raisedByAddress  String
+  reason           String
+  status           DisputeStatus @default(RAISED)
+  clientShare      Decimal?
+  freelancerShare  Decimal?
+  resolvedAt       DateTime?
+  createdAt        DateTime      @default(now())
+}
+
+enum DisputeStatus {
+  RAISED
+  UNDER_REVIEW
+  RESOLVED
+}
+
+// ---------------------------------------------------------------------------
+// Ratings — mirrors on-chain reputation contract
+// ---------------------------------------------------------------------------
+model Rating {
+  id         String   @id @default(cuid())
+  jobId      String
+  job        Job      @relation(fields: [jobId], references: [id])
+  raterId    String
+  rater      User     @relation("RatingsGiven", fields: [raterId], references: [id])
+  rateeId    String
+  ratee      User     @relation("RatingsReceived", fields: [rateeId], references: [id])
+  score      Int      // 1–5
+  comment    String?
+  createdAt  DateTime @default(now())
+
+  @@unique([raterId, jobId])
+}
+
+// ---------------------------------------------------------------------------
+// IndexerCursor — tracks last processed Horizon ledger per event type
+// ---------------------------------------------------------------------------
+model IndexerCursor {
+  id          String   @id
+  lastLedger  Int      @default(0)
+  updatedAt   DateTime @updatedAt
+}
