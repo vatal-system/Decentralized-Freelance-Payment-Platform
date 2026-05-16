@@ -56,5 +56,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: contracts
-      - run: cargo build --target wasm32-unknown-unknown --release
-      - run: cargo test
+      # Build for wasm WITHOUT testutils (testutils is dev-only and wasm-incompatible)
+      - name: Build wasm
+        run: cargo build --target wasm32-unknown-unknown --release
+      # Run tests natively (testutils only activates in dev/test builds on native target)
+      - name: Test (native)
+        run: cargo test
