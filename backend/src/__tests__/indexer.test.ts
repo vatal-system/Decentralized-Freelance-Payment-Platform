@@ -29,7 +29,12 @@ function makeEvent(
   };
 }
 
-const CONTRACT = "CBC4AW7IGPPIVYWASG2QKWZZXBKUSZXQXFS5ZZMAH7YN55DCHKCH65NJ";
+/**
+ * Arbitrary fixture id — these tests never touch a chain, so it is deliberately
+ * not a deployed contract. Live testnet ids live in deployments/testnet.json;
+ * do not copy one in here, or this file starts looking like configuration.
+ */
+const CONTRACT = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
 
 describe("event decoding", () => {
   it("decodes a captured milestone_released event", () => {
