@@ -1,28 +1,59 @@
 /**
  * Profile.tsx
  *
- * Displays a user's on-chain reputation score and completed job history.
- *
- * TODO:
- * - Call reputation.get_aggregate(address) to fetch score.
- * - List completed escrows where address was client or freelancer.
- * - Show "Leave a Rating" button for completed jobs not yet rated.
+ * Displays a user's on-chain reputation aggregate (total score + count).
+ * Job history will come from the backend indexer (see docs/wave-issues/).
  */
 
+import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
+import { useEscrow, type ReputationView } from "../hooks/useEscrow";
+import { useWallet } from "../hooks/useWallet";
 
 export default function Profile() {
   const { address } = useParams<{ address: string }>();
+  const { getReputation, loading, error } = useEscrow();
+  const { publicKey, connect } = useWallet();
+  const [reputation, setReputation] = useState<ReputationView | null>(null);
 
-  // TODO: fetch aggregate reputation
-  // TODO: fetch job history
+  useEffect(() => {
+    if (address) void getReputation(address).then((r) => r && setReputation(r));
+  }, [address, getReputation]);
+
+  const average =
+    reputation && reputation.count > 0n
+      ? Number(reputation.total_score) / Number(reputation.count)
+      : null;
 
   return (
-    <main>
+    <main style={{ padding: "1rem", maxWidth: 720 }}>
       <h1>Profile</h1>
-      <p>Address: {address}</p>
-      {/* TODO: ReputationScore component */}
-      {/* TODO: JobHistoryList */}
+      <p>
+        Address: <code>{address}</code>
+      </p>
+
+      {!publicKey && (
+        <p>
+          <button onClick={() => void connect()}>Connect Freighter</button> to load
+          reputation.
+        </p>
+      )}
+
+      {loading && <p>Loading…</p>}
+      {error && <p role="alert" style={{ color: "crimson" }}>{error}</p>}
+
+      {reputation && (
+        <p>
+          {average === null ? (
+            <>No ratings yet.</>
+          ) : (
+            <>
+              Rating: <strong>{average.toFixed(2)} / 5</strong> from{" "}
+              {reputation.count.toString()} review(s)
+            </>
+          )}
+        </p>
+      )}
     </main>
   );
 }

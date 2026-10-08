@@ -1,52 +1,137 @@
 /**
  * PostJob.tsx
  *
- * Client form to create a new escrow job with milestone breakdown.
+ * Client form to create a new escrow job with a milestone breakdown.
  *
  * Flow:
- *   1. Enter freelancer address, job title, milestones (amount + deadline each).
- *   2. Approve USDC spending allowance (SAC `approve` call).
- *   3. Call escrow.create() → escrow.fund() in sequence.
- *   4. Redirect to /jobs/:newId on success.
+ *   1. Enter freelancer address + milestone amounts + expiry.
+ *   2. `createAndFund` runs escrow.create() then escrow.fund().
+ *   3. Redirect to /jobs/:newId on success.
  *
- * TODO:
- * - Add form validation (milestone amounts > 0, deadlines in future).
- * - Show estimated Stellar network fee before signing.
- * - Handle USDC allowance check before prompting approval.
+ * Requires VITE_USDC_CONTRACT_ID to be set (the token paid to the freelancer).
  */
 
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useEscrow } from "../hooks/useEscrow";
+import { useWallet } from "../hooks/useWallet";
+import { CONTRACT_ADDRESSES, toStroops } from "../lib/stellar";
+
+interface MilestoneRow {
+  amount: string;
+}
 
 export default function PostJob() {
-  const { createEscrow, loading, error } = useEscrow();
+  const { createAndFund, loading, error } = useEscrow();
+  const { publicKey, connect, connecting } = useWallet();
+  const navigate = useNavigate();
+
   const [freelancer, setFreelancer] = useState("");
+  const [expiryDays, setExpiryDays] = useState("30");
+  const [rows, setRows] = useState<MilestoneRow[]>([{ amount: "" }]);
+
+  const updateRow = (i: number, amount: string) =>
+    setRows((r) => r.map((row, idx) => (idx === i ? { amount } : row)));
+
+  const total = rows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    // TODO: collect milestones from dynamic form fields
-    await createEscrow(freelancer, [], BigInt(0));
+    if (!publicKey) {
+      await connect();
+      return;
+    }
+    if (rows.some((r) => !(Number(r.amount) > 0))) return;
+
+    const expiry = BigInt(Math.floor(Date.now() / 1000) + Number(expiryDays) * 86400);
+    const id = await createAndFund(
+      freelancer.trim(),
+      rows.map((r) => ({ amount: toStroops(Number(r.amount)), deadline: 0n })),
+      expiry,
+    );
+    if (id !== undefined) navigate(`/jobs/${id}`);
   }
 
   return (
-    <main>
+    <main style={{ padding: "1rem", maxWidth: 720 }}>
       <h1>Post a Job</h1>
+
+      {!CONTRACT_ADDRESSES.escrow && (
+        <p role="alert" style={{ color: "crimson" }}>
+          No escrow contract configured. Run <code>scripts/deploy_testnet.sh</code> or
+          set <code>VITE_ESCROW_CONTRACT_ID</code> in <code>.env</code>.
+        </p>
+      )}
+      {!CONTRACT_ADDRESSES.usdc && (
+        <p role="alert" style={{ color: "crimson" }}>
+          No token configured. Set <code>VITE_USDC_CONTRACT_ID</code> in{" "}
+          <code>.env</code>.
+        </p>
+      )}
+
       <form onSubmit={handleSubmit}>
-        <label>
-          Freelancer Stellar Address
-          <input
-            value={freelancer}
-            onChange={(e) => setFreelancer(e.target.value)}
-            placeholder="G..."
-            required
-          />
-        </label>
-        {/* TODO: dynamic milestone fields */}
-        <button type="submit" disabled={loading}>
-          {loading ? "Submitting…" : "Create Escrow"}
+        <p>
+          <label>
+            Freelancer Stellar address
+            <br />
+            <input
+              value={freelancer}
+              onChange={(e) => setFreelancer(e.target.value)}
+              placeholder="G..."
+              size={60}
+              required
+            />
+          </label>
+        </p>
+
+        <fieldset>
+          <legend>Milestones</legend>
+          {rows.map((row, i) => (
+            <p key={i}>
+              <label>
+                Amount #{i + 1}{" "}
+                <input
+                  type="number"
+                  min="0"
+                  step="0.0000001"
+                  value={row.amount}
+                  onChange={(e) => updateRow(i, e.target.value)}
+                  required
+                />
+              </label>{" "}
+              {rows.length > 1 && (
+                <button type="button" onClick={() => setRows((r) => r.filter((_, x) => x !== i))}>
+                  Remove
+                </button>
+              )}
+            </p>
+          ))}
+          <button type="button" onClick={() => setRows((r) => [...r, { amount: "" }])}>
+            Add milestone
+          </button>
+          <p>
+            Total: <strong>{total}</strong> (token units)
+          </p>
+        </fieldset>
+
+        <p>
+          <label>
+            Expiry (days from now){" "}
+            <input
+              type="number"
+              min="1"
+              value={expiryDays}
+              onChange={(e) => setExpiryDays(e.target.value)}
+            />
+          </label>
+        </p>
+
+        <button type="submit" disabled={loading || connecting}>
+          {loading ? "Submitting…" : publicKey ? "Create & Fund Escrow" : "Connect & Continue"}
         </button>
       </form>
-      {error && <p role="alert" style={{ color: "red" }}>{error}</p>}
+
+      {error && <p role="alert" style={{ color: "crimson" }}>{error}</p>}
     </main>
   );
 }
