@@ -16,6 +16,22 @@ are short-lived and recycled, so the indexer would silently stop syncing.
 Everything below assumes testnet. There is no mainnet path — see
 [`../README.md`](../README.md) and [`SECURITY.md`](../SECURITY.md).
 
+## What is deployed today
+
+| Piece | Where | Status |
+|-------|-------|--------|
+| Contracts | Stellar testnet | ✅ Live — ids in [`../deployments/testnet.json`](../deployments/testnet.json) |
+| Frontend | Vercel project `stellar-freelance-frontend` | ✅ <https://stellar-freelance-frontend.vercel.app> — all `VITE_*` contract vars set for Production and Preview |
+| Backend API | — | ❌ Not deployed yet: `VITE_API_URL` is unset, so the job list falls back to `http://localhost:3000` and will fail in the browser until the API exists |
+
+Deployment protection (Vercel Authentication) is **off** for the frontend project so the
+demo is reachable without a Vercel login. Note that the Vercel project is not connected
+to GitHub — deployments are pushed with the CLI, so a `git push` does not redeploy it:
+
+```bash
+cd frontend && vercel deploy --prod
+```
+
 ---
 
 ## 1. Contracts → testnet
@@ -73,6 +89,10 @@ Without `VITE_API_URL` the app falls back to `http://localhost:3000`
 (`frontend/src/lib/api.ts`) and the job list will fail for every visitor.
 
 ## 3. Backend → container host
+
+Once the API has an origin, set `VITE_API_URL` on the Vercel project to it and
+redeploy the frontend (the value is inlined at build time), then set the
+backend's `CORS_ORIGIN` to `https://stellar-freelance-frontend.vercel.app`.
 
 Build is `backend/Dockerfile`; it runs `npx prisma migrate deploy && node dist/server.js`,
 so migrations apply on boot. Attach a PostgreSQL instance and set:
