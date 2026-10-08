@@ -136,6 +136,26 @@ model IndexerCursor {
 }
 
 // ---------------------------------------------------------------------------
+// IndexerDeadLetter — contract events the indexer could not apply
+//
+// A failing event never blocks the batch (the cursor still advances), so
+// without this table a decode/persist bug would silently drop state changes.
+// Rows are kept for inspection and replayed by hand after a fix.
+// ---------------------------------------------------------------------------
+model IndexerDeadLetter {
+  /// Event id from Soroban RPC (stable across re-fetches of the same event)
+  id          String   @id
+  ledger      Int
+  eventName   String?
+  contractId  String?
+  error       String
+  /// Incremented when the same event is recorded again (e.g. after a cursor rewind)
+  attempts    Int      @default(1)
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
 // AuthNonce — single-use, short-lived challenge nonces for wallet auth
 // ---------------------------------------------------------------------------
 model AuthNonce {

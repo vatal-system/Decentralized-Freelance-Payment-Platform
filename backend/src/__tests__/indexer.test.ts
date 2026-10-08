@@ -132,6 +132,63 @@ describe("processContractEvents", () => {
     expect(source.getEvents).not.toHaveBeenCalled();
   });
 
+  it("dead-letters a failing event and keeps going", async () => {
+    const events = [
+      makeEvent("funded", { escrow_id: nativeToScVal(1n, { type: "u64" }) }, 10),
+      makeEvent("refunded", { escrow_id: nativeToScVal(1n, { type: "u64" }) }, 11),
+    ];
+    const source = { getEvents: vi.fn(async () => ({ events, latestLedger: 11 })) };
+    let cursorValue = 9;
+    const cursor = {
+      get: async () => cursorValue,
+      set: async (ledger: number) => {
+        cursorValue = ledger;
+      },
+    };
+    const failure = new Error("boom");
+    const dispatch = vi
+      .fn()
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce(undefined);
+    const onError = vi.fn(async () => undefined);
+
+    await processContractEvents(source, cursor, [CONTRACT], dispatch, onError);
+
+    // Only the failing event is dead-lettered, and it carries the cause.
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(events[0], failure);
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("still advances the cursor when the dead-letter store itself fails", async () => {
+    const events = [makeEvent("funded", { escrow_id: nativeToScVal(1n, { type: "u64" }) }, 10)];
+    const source = { getEvents: vi.fn(async () => ({ events, latestLedger: 10 })) };
+    let cursorValue = 9;
+    const cursor = {
+      get: async () => cursorValue,
+      set: async (ledger: number) => {
+        cursorValue = ledger;
+      },
+    };
+    const onError = vi.fn(async () => {
+      throw new Error("database is down");
+    });
+
+    const next = await processContractEvents(
+      source,
+      cursor,
+      [CONTRACT],
+      vi.fn(async () => {
+        throw new Error("boom");
+      }),
+      onError,
+    );
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(next).toBe(10);
+    expect(cursorValue).toBe(10);
+  });
+
   it("keeps going when one event fails", async () => {
     const events = [
       makeEvent("funded", { escrow_id: nativeToScVal(1n, { type: "u64" }) }, 10),
@@ -150,9 +207,14 @@ describe("processContractEvents", () => {
       .mockRejectedValueOnce(new Error("boom"))
       .mockResolvedValueOnce(undefined);
 
-    const next = await processContractEvents(source, cursor, [CONTRACT], dispatch);
+    // Stub the dead-letter store: this test is about dispatch, not persistence,
+    // and the real store would need a database.
+    const onError = vi.fn(async () => undefined);
+
+    const next = await processContractEvents(source, cursor, [CONTRACT], dispatch, onError);
 
     expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(1);
     expect(next).toBe(11);
   });
 });

@@ -16,9 +16,12 @@
  * Contributor Notes:
  * - The cursor (last scanned ledger) is persisted in IndexerCursor, so the
  *   indexer resumes after a restart and does not reprocess applied ledgers.
- * - Unknown events are ignored; a failed event is logged and skipped so it
- *   cannot block the rest of the batch.
- * - TODO: add a dead-letter record for events that fail repeatedly.
+ * - Unknown events are ignored; a failed event is logged and recorded in
+ *   IndexerDeadLetter so it cannot block the rest of the batch *or* vanish.
+ *   Because the cursor still advances, a dead letter is a permanent record of
+ *   state that is missing from the DB — query it after the fact:
+ *     SELECT * FROM "IndexerDeadLetter" ORDER BY "lastSeenAt" DESC;
+ *   Re-run the affected event by hand once the bug is fixed, then delete the row.
  */
 
 import { SorobanRpc } from "@stellar/stellar-sdk";
@@ -33,6 +36,9 @@ import {
 
 const CURSOR_ID = "main";
 const EVENT_PAGE_LIMIT = 100;
+
+/** Longest error message persisted to IndexerDeadLetter.error. */
+const MAX_ERROR_LENGTH = 500;
 
 const CONTRACT_IDS = [
   config.ESCROW_CONTRACT_ID,
@@ -94,14 +100,15 @@ async function poll() {
 /**
  * Fetch and process events for the given contracts, then advance the cursor.
  *
- * `dispatch` is injectable so the cursor/decoding logic is testable without a
- * chain or database.
+ * `dispatch` and `onError` are injectable so the cursor/decoding/dead-letter
+ * logic is testable without a chain or database.
  */
 export async function processContractEvents(
   source: SorobanEventSource,
   cursor: CursorStore,
   contractIds: string[],
   dispatch: (event: ContractEventLike) => Promise<void> = dispatchEvent,
+  onError: (event: ContractEventLike, error: unknown) => Promise<void> = recordDeadLetter,
 ): Promise<number> {
   const lastLedger = await cursor.get();
   if (contractIds.length === 0) return lastLedger;
@@ -123,6 +130,12 @@ export async function processContractEvents(
     } catch (err) {
       // One bad event must not block the rest of the batch.
       console.error(`[indexer] failed to process event ${event.id ?? "?"}`, err);
+      // Recording the failure must never take the poller down with it.
+      try {
+        await onError(event, err);
+      } catch (storeErr) {
+        console.error("[indexer] could not record the failed event", storeErr);
+      }
     }
   }
 
@@ -130,6 +143,45 @@ export async function processContractEvents(
   const next = Math.max(lastLedger, res.latestLedger);
   await cursor.set(next);
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// Dead letters
+// ---------------------------------------------------------------------------
+
+/** Stable key for an event: RPC ids are stable, so a rewind re-uses the row. */
+function deadLetterKey(event: ContractEventLike): string {
+  return event.id ?? `ledger-${event.ledger}-${decodeEventName(event) ?? "unknown"}`;
+}
+
+/**
+ * Persist an event the indexer could not apply. The cursor still advances, so
+ * this row is the only trace that a state change was skipped.
+ */
+export async function recordDeadLetter(
+  event: ContractEventLike,
+  error: unknown,
+): Promise<void> {
+  const message = (error instanceof Error ? error.message : String(error)).slice(
+    0,
+    MAX_ERROR_LENGTH,
+  );
+  const id = deadLetterKey(event);
+
+  await prisma.indexerDeadLetter.upsert({
+    where: { id },
+    create: {
+      id,
+      ledger: event.ledger,
+      eventName: decodeEventName(event),
+      contractId: (event as { contractId?: string }).contractId ?? null,
+      error: message,
+    },
+    update: {
+      attempts: { increment: 1 },
+      error: message,
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
