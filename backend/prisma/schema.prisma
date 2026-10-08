@@ -132,3 +132,13 @@ model IndexerCursor {
   lastLedger  Int      @default(0)
   updatedAt   DateTime @updatedAt
 }
+
+// ---------------------------------------------------------------------------
+// AuthNonce — single-use, short-lived challenge nonces for wallet auth
+// ---------------------------------------------------------------------------
+model AuthNonce {
+  /// Stellar address the nonce was issued to
+  address   String   @id
+  nonce     String
+  expiresAt DateTime
+}

@@ -12,7 +12,8 @@
  *   4. Client posts { address, signature, nonce } to /api/users/auth.
  *   5. Server verifies signature with stellar-sdk, issues JWT.
  *
- * TODO: implement nonce storage (Redis or DB) with TTL to prevent replay attacks.
+ * Nonces are stored in the database (single-use, 60s TTL) so they survive
+ * restarts and work across instances.
  */
 
 import { Router } from "express";
@@ -24,22 +25,26 @@ import { config } from "../config";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import { AppError } from "../middleware/errorHandler";
+import { consumeNonce, issueNonce, type AuthNonceStore } from "../lib/authNonce";
 
 export const usersRouter = Router();
 
 const secret = new TextEncoder().encode(config.JWT_SECRET);
 
-// In-memory nonce store (replace with Redis in production)
-const nonces = new Map<string, { nonce: string; expiresAt: number }>();
+// `prisma.authNonce` structurally satisfies the store interface.
+const nonceStore = prisma.authNonce as unknown as AuthNonceStore;
 
 // GET /api/users/challenge?address=G...
-usersRouter.get("/challenge", (req, res) => {
-  const address = String(req.query.address ?? "");
-  if (!address.startsWith("G")) throw new AppError(400, "Invalid Stellar address");
+usersRouter.get("/challenge", async (req, res, next) => {
+  try {
+    const address = String(req.query.address ?? "");
+    if (!address.startsWith("G")) throw new AppError(400, "Invalid Stellar address");
 
-  const nonce = crypto.randomUUID();
-  nonces.set(address, { nonce, expiresAt: Date.now() + 60_000 });
-  res.json({ nonce });
+    const nonce = await issueNonce(nonceStore, address);
+    res.json({ nonce });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // POST /api/users/auth
@@ -54,11 +59,9 @@ usersRouter.post("/auth", validate(authSchema), async (req, res, next) => {
   try {
     const { address, signature, nonce } = req.body as z.infer<typeof authSchema>;
 
-    const stored = nonces.get(address);
-    if (!stored || stored.nonce !== nonce || Date.now() > stored.expiresAt) {
-      throw new AppError(401, "Invalid or expired nonce");
-    }
-    nonces.delete(address);
+    // Single use: consuming deletes the stored nonce on a match.
+    const consumed = await consumeNonce(nonceStore, address, nonce);
+    if (!consumed) throw new AppError(401, "Invalid or expired nonce");
 
     // Verify the signature
     const keypair = Keypair.fromPublicKey(address);
