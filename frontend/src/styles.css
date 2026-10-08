@@ -96,7 +96,8 @@ button:disabled {
   color: #fff;
 }
 
-input {
+input,
+select {
   font: inherit;
   padding: 0.35rem 0.5rem;
   border: 1px solid var(--border);
