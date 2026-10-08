@@ -157,15 +157,18 @@ export function useEscrow() {
     [sign],
   );
 
-  /** Create an escrow and immediately fund it. Returns the id and the fund hash. */
+  /**
+   * Create an escrow and immediately fund it, paying in `token` (a SAC address).
+   * Returns the id and the fund hash.
+   */
   const createAndFund = useCallback(
-    (freelancer: string, milestones: MilestoneInput[], expiry: bigint) =>
+    (freelancer: string, token: string, milestones: MilestoneInput[], expiry: bigint) =>
       run("create", freelancer, async (pk): Promise<CreateAndFundResult> => {
         const escrow = CONTRACT_ADDRESSES.escrow;
         const created = await submit(pk, escrow, "create", [
           scAddress(pk),
           scAddress(freelancer),
-          scAddress(CONTRACT_ADDRESSES.usdc),
+          scAddress(token),
           milestonesToScVal(milestones),
           scU64(expiry),
         ]);

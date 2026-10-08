@@ -13,6 +13,7 @@ import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import { AppError } from "../middleware/errorHandler";
+import { getAsset, UnknownAssetError } from "../lib/assets";
 
 export const jobsRouter = Router();
 
@@ -27,6 +28,8 @@ const createJobSchema = z.object({
   description: z.string().min(10),
   milestones: z.array(milestoneSchema).min(1),
   expiresAt: z.string().datetime().optional(),
+  /** Asset symbol the job pays in; must be in the registry. Defaults to USDC. */
+  asset: z.string().default("USDC"),
 });
 
 // GET /api/jobs
@@ -53,7 +56,17 @@ jobsRouter.get("/", async (req, res, next) => {
 // POST /api/jobs
 jobsRouter.post("/", requireAuth, validate(createJobSchema), async (req, res, next) => {
   try {
-    const { title, description, milestones, expiresAt } = req.body as z.infer<typeof createJobSchema>;
+    const { title, description, milestones, expiresAt, asset } = req.body as z.infer<
+      typeof createJobSchema
+    >;
+
+    let assetSymbol: string;
+    try {
+      assetSymbol = getAsset(asset).symbol;
+    } catch (err) {
+      if (err instanceof UnknownAssetError) throw new AppError(400, err.message);
+      throw err;
+    }
 
     const client = await prisma.user.findUnique({
       where: { stellarAddress: res.locals.stellarAddress },
@@ -66,6 +79,7 @@ jobsRouter.post("/", requireAuth, validate(createJobSchema), async (req, res, ne
       data: {
         title,
         description,
+        asset: assetSymbol,
         totalAmountUsdc,
         clientId: client.id,
         expiresAt: expiresAt ? new Date(expiresAt) : undefined,

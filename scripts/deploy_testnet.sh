@@ -28,6 +28,7 @@ DEPLOYMENTS_DIR="$REPO_ROOT/deployments"
 NETWORK="${NETWORK:-testnet}"
 IDENTITY="${IDENTITY:-deployer}"
 USDC_CONTRACT_ID="${USDC_CONTRACT_ID:-}"
+XLM_CONTRACT_ID="${XLM_CONTRACT_ID:-}"
 
 command -v stellar >/dev/null || {
   echo "error: stellar-cli not found. Install v25.2.0+ from https://github.com/stellar/stellar-cli/releases" >&2
@@ -82,7 +83,8 @@ cat > "$DEPLOYMENTS_DIR/testnet.json" <<JSON
   "escrow_contract_id": "$ESCROW_CONTRACT_ID",
   "dispute_contract_id": "$DISPUTE_CONTRACT_ID",
   "reputation_contract_id": "$REPUTATION_CONTRACT_ID",
-  "usdc_contract_id": "$USDC_CONTRACT_ID"
+  "usdc_contract_id": "$USDC_CONTRACT_ID",
+  "xlm_contract_id": "$XLM_CONTRACT_ID"
 }
 JSON
 
@@ -97,6 +99,7 @@ VITE_ESCROW_CONTRACT_ID=$ESCROW_CONTRACT_ID
 VITE_DISPUTE_CONTRACT_ID=$DISPUTE_CONTRACT_ID
 VITE_REPUTATION_CONTRACT_ID=$REPUTATION_CONTRACT_ID
 VITE_USDC_CONTRACT_ID=$USDC_CONTRACT_ID
+VITE_XLM_CONTRACT_ID=$XLM_CONTRACT_ID
 ENV
   echo "==> Wrote $FE_ENV"
 else

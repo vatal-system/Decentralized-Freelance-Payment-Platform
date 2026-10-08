@@ -134,7 +134,7 @@ export default function Dashboard() {
                 {job.client?.stellarAddress
                   ? `${job.client.stellarAddress.slice(0, 6)}…${job.client.stellarAddress.slice(-4)}`
                   : "—"}{" "}
-                · Total: {String(job.totalAmountUsdc)}
+                · Total: {String(job.totalAmountUsdc)} {job.asset ?? ""}
               </span>
               <br />
               {job.escrowId !== null && job.escrowId !== undefined ? (

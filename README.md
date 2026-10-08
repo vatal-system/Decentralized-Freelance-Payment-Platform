@@ -72,7 +72,9 @@ DisputeContract ◄── Arbitrator                                       │
 
 Full details, the contract reference table, and the shared `interface` crate
 rationale are in [`CONTRIBUTING.md`](./CONTRIBUTING.md). The events each contract
-emits are catalogued in [`docs/EVENTS.md`](./docs/EVENTS.md).
+emits are catalogued in [`docs/EVENTS.md`](./docs/EVENTS.md). A job can pay in
+any registered Stellar Asset Contract; see [`docs/ASSETS.md`](./docs/ASSETS.md)
+for the registry and how to add one.
 
 ## Stack
 

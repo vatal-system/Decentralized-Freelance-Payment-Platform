@@ -36,6 +36,8 @@ model Job {
   title           String
   description     String
   status          JobStatus @default(CREATED)
+  /// Asset symbol the job pays in (see lib/assets.ts)
+  asset           String    @default("USDC")
 
   clientId        String
   client          User      @relation("ClientJobs", fields: [clientId], references: [id])

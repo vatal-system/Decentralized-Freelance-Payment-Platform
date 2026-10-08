@@ -38,6 +38,8 @@ export interface JobApi {
   escrowId: string | number | null;
   title: string;
   status: string;
+  /** Asset symbol the job pays in (see lib/assets.ts). */
+  asset?: string;
   totalAmountUsdc: string | number;
   client?: { stellarAddress: string; displayName?: string | null } | null;
   freelancer?: { stellarAddress: string } | null;

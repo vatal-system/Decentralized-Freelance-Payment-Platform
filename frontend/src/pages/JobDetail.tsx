@@ -12,7 +12,8 @@ import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
-import { explorerTxUrl, fromStroops } from "../lib/stellar";
+import { explorerTxUrl } from "../lib/stellar";
+import { assetForContractId, fromBaseUnits } from "../lib/assets";
 
 const POLL_MS = 5_000;
 
@@ -50,6 +51,12 @@ export default function JobDetail() {
     );
   }
 
+  // Show amounts in the escrow's asset (fall back to raw token units if the
+  // SAC is not in the registry).
+  const asset = escrow ? assetForContractId(escrow.token) : null;
+  const decimals = asset?.decimals ?? 7;
+  const symbol = asset?.symbol ?? "tokens";
+
   const isClient = publicKey !== null && escrow?.client === publicKey;
   const isFreelancer = publicKey !== null && escrow?.freelancer === publicKey;
   const isParticipant = isClient || isFreelancer;
@@ -84,18 +91,19 @@ export default function JobDetail() {
             Freelancer: <code>{escrow.freelancer}</code>
             {isFreelancer && " (you)"}
             <br />
-            Total: <strong>{fromStroops(escrow.total_amount)}</strong> token units
+            Total: <strong>{fromBaseUnits(escrow.total_amount, decimals)}</strong> {symbol}
           </p>
 
           <h2>Milestones</h2>
           <ol>
             {escrow.milestones.map((m, i) => (
               <li key={i}>
-                {fromStroops(m.amount)} —{" "}
+                {fromBaseUnits(m.amount, decimals)} {symbol} —{" "}
                 {m.released
                   ? "released"
-                  : `${fromStroops(m.released_amount)} released, ${fromStroops(
+                  : `${fromBaseUnits(m.released_amount, decimals)} released, ${fromBaseUnits(
                       m.amount - m.released_amount,
+                      decimals,
                     )} remaining`}{" "}
                 {isClient && isActive && !m.released && (
                   <button

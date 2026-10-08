@@ -24,6 +24,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { config } from "../config";
 import { buildCreateArgs } from "../lib/escrowArgs";
+import { getAsset, toBaseUnits, UnknownAssetError } from "../lib/assets";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
@@ -61,13 +62,26 @@ escrowRouter.post("/build/create", requireAuth, validate(buildCreateSchema), asy
     if (!job) throw new AppError(404, "Job not found");
     if (job.client.stellarAddress !== res.locals.stellarAddress) throw new AppError(403, "Forbidden");
 
+    // Pay in the asset the job is configured for, validated against the registry.
+    let asset;
+    try {
+      asset = getAsset(job.asset);
+    } catch (err) {
+      if (err instanceof UnknownAssetError) throw new AppError(400, err.message);
+      throw err;
+    }
+    const tokenContractId = config[asset.configKey];
+    if (!tokenContractId) {
+      throw new AppError(400, `No contract configured for asset ${asset.symbol}`);
+    }
+
     const contract = new Contract(config.ESCROW_CONTRACT_ID);
     const args = buildCreateArgs({
       client: res.locals.stellarAddress,
       freelancer: freelancerAddress,
-      token: config.USDC_CONTRACT_ID,
+      token: tokenContractId,
       milestones: job.milestones.map((m) => ({
-        amount: BigInt(Math.round(Number(m.amountUsdc) * 1e7)),
+        amount: toBaseUnits(m.amountUsdc.toString(), asset.decimals),
         deadline: BigInt(
           m.deadline ? Math.floor(m.deadline.getTime() / 1000) : expiryTimestamp,
         ),

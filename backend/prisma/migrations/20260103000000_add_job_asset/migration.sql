@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Job" ADD COLUMN "asset" TEXT NOT NULL DEFAULT 'USDC';

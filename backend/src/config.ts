@@ -12,6 +12,7 @@ const schema = z.object({
   DISPUTE_CONTRACT_ID: z.string().default(""),
   REPUTATION_CONTRACT_ID: z.string().default(""),
   USDC_CONTRACT_ID: z.string().default(""),
+  XLM_CONTRACT_ID: z.string().default(""),
   INDEXER_POLL_INTERVAL_MS: z.coerce.number().default(5000),
 });
 
