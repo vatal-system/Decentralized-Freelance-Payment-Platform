@@ -21,9 +21,9 @@ import {
   TransactionBuilder,
   BASE_FEE,
   nativeToScVal,
-  Address,
 } from "@stellar/stellar-sdk";
 import { config } from "../config";
+import { buildCreateArgs } from "../lib/escrowArgs";
 import { prisma } from "../db";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
@@ -62,24 +62,22 @@ escrowRouter.post("/build/create", requireAuth, validate(buildCreateSchema), asy
     if (job.client.stellarAddress !== res.locals.stellarAddress) throw new AppError(403, "Forbidden");
 
     const contract = new Contract(config.ESCROW_CONTRACT_ID);
-    const milestoneScVals = job.milestones.map((m) =>
-      nativeToScVal({
+    const args = buildCreateArgs({
+      client: res.locals.stellarAddress,
+      freelancer: freelancerAddress,
+      token: config.USDC_CONTRACT_ID,
+      milestones: job.milestones.map((m) => ({
         amount: BigInt(Math.round(Number(m.amountUsdc) * 1e7)),
-        released: false,
-        deadline: BigInt(m.deadline ? Math.floor(m.deadline.getTime() / 1000) : expiryTimestamp),
-      })
-    );
+        deadline: BigInt(
+          m.deadline ? Math.floor(m.deadline.getTime() / 1000) : expiryTimestamp,
+        ),
+      })),
+      expiry: BigInt(expiryTimestamp),
+    });
 
     const xdr = await buildTx(
       res.locals.stellarAddress,
-      contract.call(
-        "create",
-        Address.fromString(res.locals.stellarAddress).toScVal(),
-        Address.fromString(freelancerAddress).toScVal(),
-        Address.fromString(config.USDC_CONTRACT_ID).toScVal(),
-        nativeToScVal(milestoneScVals),
-        nativeToScVal(BigInt(expiryTimestamp)),
-      ),
+      contract.call("create", ...args),
     );
 
     res.json({ xdr });
