@@ -1,0 +1,80 @@
+# Render Blueprint for the backend API.
+#
+# Deploy with: Render Dashboard → New → Blueprint → pick this repository.
+# See docs/DEPLOYMENT.md for the full walkthrough.
+#
+# Why a Render web service and not a serverless function: the API starts the
+# Soroban event indexer in-process (backend/src/server.ts), so it needs a
+# container that stays up. The indexer persists its cursor in Postgres, so if a
+# free instance spins down while idle it catches up from the last processed
+# ledger when it wakes — no events are lost, they are just applied later.
+#
+# DATABASE_URL is intentionally not created here: the project uses a managed
+# Postgres (Tiger Cloud, free tier). Set it in the dashboard after creating the
+# Blueprint. To use Render's own Postgres instead, add:
+#
+#   databases:
+#     - name: freelance-stellar-db
+#       databaseName: freelance_stellar
+#       plan: free
+#
+# and point DATABASE_URL at it with `fromDatabase`.
+#
+# The container runs `npx prisma migrate deploy && node dist/server.js`, so
+# migrations apply on every boot.
+
+services:
+  - type: web
+    name: stellar-freelance-api
+    runtime: docker
+    plan: free
+    region: oregon
+    # The Dockerfile lives in backend/, so both the path and the build context
+    # have to point there.
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    # Deploys are deliberate: `git push` should not roll production forward
+    # without a green CI run.
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # Persisted PostgreSQL. Set this to the Tiger Cloud connection string.
+      - key: DATABASE_URL
+        sync: false
+
+      # Signing key for auth tokens; Render generates a strong value.
+      - key: JWT_SECRET
+        generateValue: true
+
+      - key: STELLAR_NETWORK
+        value: testnet
+      - key: HORIZON_URL
+        value: https://horizon-testnet.stellar.org
+      - key: SOROBAN_RPC_URL
+        value: https://soroban-testnet.stellar.org
+
+      # Deployed contract ids — keep in step with deployments/testnet.json.
+      # Without them the indexer logs "No contract IDs configured" and does nothing.
+      - key: ESCROW_CONTRACT_ID
+        value: CALNRFGMUI7MLNLWO445U2BSDENF6DENURHXXFFRT6PV5GSOQX7GZGP7
+      - key: DISPUTE_CONTRACT_ID
+        value: CB24TF5GPP7EA6VWK4KZWBHHSY6FWNV3DKOGSZSDK347EODGGNPN7IMF
+      - key: REPUTATION_CONTRACT_ID
+        value: CA5GXR4LVH5DYGB2RZDFAM3VNJW6LQ5EKUKURSLZBJGAH7LFJAOHKSET
+
+      - key: XLM_CONTRACT_ID
+        value: CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
+
+      # Dispute panel. Empty would fail the resolve route closed.
+      - key: ARBITRATOR_ADDRESSES
+        value: GBPLJHDI6RPLS4EEJJTM7EVEV3UNTXLFAACWA63QSTHGLWH5RO3LQ75B
+
+      # The deployed frontend. Leaving this out allows every origin.
+      - key: CORS_ORIGIN
+        value: https://stellar-freelance-frontend.vercel.app
+
+      - key: INDEXER_POLL_INTERVAL_MS
+        value: "5000"
