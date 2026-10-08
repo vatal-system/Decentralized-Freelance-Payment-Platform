@@ -12,9 +12,9 @@
 
 use crate::{EscrowContract, EscrowContractClient, EscrowError, EscrowStatus, Milestone};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, Vec,
+    xdr, Address, Env, Map, Symbol, TryFromVal, Val, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -91,6 +91,32 @@ impl Fixture {
 }
 
 // ---------------------------------------------------------------------------
+// Event log helpers
+// ---------------------------------------------------------------------------
+
+/// Decode the data map of the first event named `name` in the event log.
+fn event_data(env: &Env, name: &str) -> Val {
+    for e in env.events().all().events() {
+        let xdr::ContractEventBody::V0(body) = &e.body;
+        let Some(topic0) = body.topics.first() else {
+            continue;
+        };
+        let topic_val = Val::try_from_val(env, topic0).unwrap();
+        if Symbol::try_from_val(env, &topic_val).unwrap() == Symbol::new(env, name) {
+            return Val::try_from_val(env, &body.data).unwrap();
+        }
+    }
+    panic!("event {name:?} not found");
+}
+
+/// Read a named field out of an event's data map.
+fn field<T: TryFromVal<Env, Val>>(env: &Env, data: &Val, name: &str) -> T {
+    let map = Map::<Symbol, Val>::try_from_val(env, data).unwrap();
+    let value = map.get(Symbol::new(env, name)).unwrap();
+    T::try_from_val(env, &value).unwrap()
+}
+
+// ---------------------------------------------------------------------------
 // create
 // ---------------------------------------------------------------------------
 
@@ -112,6 +138,27 @@ fn create_stores_expected_state() {
     assert_eq!(data.milestones.len(), 2);
     assert_eq!(data.created_at, 1_000);
     assert_eq!(f.balance(&f.escrow), 0, "nothing held before funding");
+}
+
+#[test]
+fn created_event_carries_freelancer_and_total() {
+    let f = fixture();
+    let id = f.c().create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones(&f.env, &[300, 700]),
+        &10_000,
+    );
+
+    let data = event_data(&f.env, "created");
+    let escrow_id: u64 = field(&f.env, &data, "escrow_id");
+    let freelancer: Address = field(&f.env, &data, "freelancer");
+    let total_amount: i128 = field(&f.env, &data, "total_amount");
+
+    assert_eq!(escrow_id, id);
+    assert_eq!(freelancer, f.freelancer);
+    assert_eq!(total_amount, 1_000);
 }
 
 #[test]
@@ -261,6 +308,28 @@ fn fund_moves_funds_into_escrow() {
     assert_eq!(f.c().get(&id).status, EscrowStatus::Active);
     assert_eq!(f.balance(&f.escrow), 1_000);
     assert_eq!(f.balance(&f.client), 9_000);
+}
+
+#[test]
+fn funded_event_carries_freelancer() {
+    let f = fixture();
+    let id = f.c().create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones(&f.env, &[1_000]),
+        &10_000,
+    );
+    f.c().fund(&id);
+
+    let data = event_data(&f.env, "funded");
+    let escrow_id: u64 = field(&f.env, &data, "escrow_id");
+    let freelancer: Address = field(&f.env, &data, "freelancer");
+    let amount: i128 = field(&f.env, &data, "amount");
+
+    assert_eq!(escrow_id, id);
+    assert_eq!(freelancer, f.freelancer);
+    assert_eq!(amount, 1_000);
 }
 
 #[test]

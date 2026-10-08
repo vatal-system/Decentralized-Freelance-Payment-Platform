@@ -69,6 +69,10 @@ pub struct Rated {
     pub rater: Address,
     pub ratee: Address,
     pub score: u32,
+    /// The ratee's aggregate count after this rating is applied.
+    pub count: u64,
+    /// The ratee's aggregate total_score after this rating is applied.
+    pub total_score: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +213,8 @@ impl ReputationContract {
             rater,
             ratee,
             score,
+            count: agg.count,
+            total_score: agg.total_score,
         }
         .publish(&env);
         Ok(())

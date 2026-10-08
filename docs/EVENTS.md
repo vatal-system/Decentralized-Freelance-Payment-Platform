@@ -22,8 +22,8 @@ and, if desired, a second topic for the id/address in the `#[topic]` field.
 
 | Rust type | topic0 (`Symbol`) | topic1 (`#[topic]`) | data fields |
 |-----------|-------------------|---------------------|-------------|
-| `Created` | `created` | `client: Address` | `escrow_id: u64` |
-| `Funded` | `funded` | `client: Address` | `escrow_id: u64`, `amount: i128` |
+| `Created` | `created` | `client: Address` | `escrow_id: u64`, `freelancer: Address`, `total_amount: i128` |
+| `Funded` | `funded` | `client: Address` | `escrow_id: u64`, `amount: i128`, `freelancer: Address` |
 | `MilestoneReleased` | `milestone_released` | `escrow_id: u64` | `index: u32`, `amount: i128` |
 | `DisputeOpened` | `dispute_opened` | `escrow_id: u64` | `initiator: Address` |
 | `Resolved` | `resolved` | `escrow_id: u64` | `client_share: i128`, `freelancer_share: i128` |
@@ -41,7 +41,7 @@ and, if desired, a second topic for the id/address in the `#[topic]` field.
 
 | Rust type | topic0 (`Symbol`) | topic1 (`#[topic]`) | data fields |
 |-----------|-------------------|---------------------|-------------|
-| `Rated` | `rated` | `escrow_id: u64` | `rater: Address`, `ratee: Address`, `score: u32` |
+| `Rated` | `rated` | `escrow_id: u64` | `rater: Address`, `ratee: Address`, `score: u32`, `count: u64`, `total_score: u64` |
 
 ## Verifying this list against the source
 

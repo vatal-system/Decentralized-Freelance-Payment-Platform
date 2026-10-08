@@ -8,9 +8,9 @@
 use crate::{ReputationContract, ReputationContractClient, ReputationError};
 use escrow::{EscrowContract, EscrowContractClient, Milestone};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events as _, Ledger},
     token::StellarAssetClient,
-    Address, Env, Vec,
+    xdr, Address, Env, Map, Symbol, TryFromVal, Val, Vec,
 };
 
 struct Fx {
@@ -89,6 +89,48 @@ impl Fx {
         self.escrow_client().release_milestone(&id, &0);
         id
     }
+}
+
+// ---------------------------------------------------------------------------
+// Event log helpers
+// ---------------------------------------------------------------------------
+
+/// Decode the data map of the first event named `name` in the event log.
+fn event_data(env: &Env, name: &str) -> Val {
+    for e in env.events().all().events() {
+        let xdr::ContractEventBody::V0(body) = &e.body;
+        let Some(topic0) = body.topics.first() else {
+            continue;
+        };
+        let topic_val = Val::try_from_val(env, topic0).unwrap();
+        if Symbol::try_from_val(env, &topic_val).unwrap() == Symbol::new(env, name) {
+            return Val::try_from_val(env, &body.data).unwrap();
+        }
+    }
+    panic!("event {name:?} not found");
+}
+
+/// Read a named field out of an event's data map.
+fn field<T: TryFromVal<Env, Val>>(env: &Env, data: &Val, name: &str) -> T {
+    let map = Map::<Symbol, Val>::try_from_val(env, data).unwrap();
+    let value = map.get(Symbol::new(env, name)).unwrap();
+    T::try_from_val(env, &value).unwrap()
+}
+
+#[test]
+fn rated_event_carries_resulting_aggregate() {
+    let f = setup();
+    let id = f.completed();
+    f.rep_client().submit(&f.client, &f.freelancer, &id, &5);
+
+    let data = event_data(&f.env, "rated");
+    let ratee: Address = field(&f.env, &data, "ratee");
+    let count: u64 = field(&f.env, &data, "count");
+    let total_score: u64 = field(&f.env, &data, "total_score");
+
+    assert_eq!(ratee, f.freelancer);
+    assert_eq!(count, 1);
+    assert_eq!(total_score, 5);
 }
 
 #[test]

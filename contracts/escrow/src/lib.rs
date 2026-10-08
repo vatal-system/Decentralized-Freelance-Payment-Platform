@@ -58,6 +58,8 @@ pub struct Created {
     #[topic]
     pub client: Address,
     pub escrow_id: u64,
+    pub freelancer: Address,
+    pub total_amount: i128,
 }
 
 #[contractevent]
@@ -67,6 +69,7 @@ pub struct Funded {
     pub client: Address,
     pub escrow_id: u64,
     pub amount: i128,
+    pub freelancer: Address,
 }
 
 #[contractevent]
@@ -210,6 +213,8 @@ impl EscrowContract {
         Created {
             client: escrow.client.clone(),
             escrow_id: id,
+            freelancer: escrow.freelancer.clone(),
+            total_amount: escrow.total_amount,
         }
         .publish(&env);
         Ok(id)
@@ -285,6 +290,7 @@ impl EscrowContract {
             client: escrow.client.clone(),
             escrow_id,
             amount: escrow.total_amount,
+            freelancer: escrow.freelancer.clone(),
         }
         .publish(&env);
         Ok(())
