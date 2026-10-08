@@ -53,6 +53,16 @@ export const ACTIVE_NETWORK: NetworkName =
 export const { networkPassphrase, rpcUrl, horizonUrl } =
   NETWORK_CONFIG[ACTIVE_NETWORK];
 
+/** stellar.expert uses `public` (not `mainnet`) in its explorer paths. */
+const EXPLORER_HOST: Record<NetworkName, string> = {
+  testnet: "https://stellar.expert/explorer/testnet",
+  mainnet: "https://stellar.expert/explorer/public",
+};
+
+/** Link to a transaction on stellar.expert for the active network. */
+export const explorerTxUrl = (hash: string): string =>
+  `${EXPLORER_HOST[ACTIVE_NETWORK]}/tx/${hash}`;
+
 // ---------------------------------------------------------------------------
 // Deployed contract addresses (set via .env)
 // ---------------------------------------------------------------------------

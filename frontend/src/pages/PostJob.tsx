@@ -12,11 +12,11 @@
  */
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import Layout from "../components/Layout";
-import { useEscrow } from "../hooks/useEscrow";
+import { useEscrow, type CreateAndFundResult } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
-import { CONTRACT_ADDRESSES, toStroops } from "../lib/stellar";
+import { CONTRACT_ADDRESSES, explorerTxUrl, toStroops } from "../lib/stellar";
 
 interface MilestoneRow {
   amount: string;
@@ -25,11 +25,11 @@ interface MilestoneRow {
 export default function PostJob() {
   const { createAndFund, loading, error } = useEscrow();
   const { publicKey, connect, connecting } = useWallet();
-  const navigate = useNavigate();
 
   const [freelancer, setFreelancer] = useState("");
   const [expiryDays, setExpiryDays] = useState("30");
   const [rows, setRows] = useState<MilestoneRow[]>([{ amount: "" }]);
+  const [created, setCreated] = useState<CreateAndFundResult | null>(null);
 
   const updateRow = (i: number, amount: string) =>
     setRows((r) => r.map((row, idx) => (idx === i ? { amount } : row)));
@@ -45,12 +45,12 @@ export default function PostJob() {
     if (rows.some((r) => !(Number(r.amount) > 0))) return;
 
     const expiry = BigInt(Math.floor(Date.now() / 1000) + Number(expiryDays) * 86400);
-    const id = await createAndFund(
+    const result = await createAndFund(
       freelancer.trim(),
       rows.map((r) => ({ amount: toStroops(Number(r.amount)), deadline: 0n })),
       expiry,
     );
-    if (id !== undefined) navigate(`/jobs/${id}`);
+    if (result) setCreated(result);
   }
 
   return (
@@ -135,6 +135,21 @@ export default function PostJob() {
       {error && (
         <p role="alert" className="alert alert-error">
           {error}
+        </p>
+      )}
+
+      {created && (
+        <p className="alert">
+          Escrow #{created.id.toString()} created and funded. Transaction{" "}
+          <a
+            href={explorerTxUrl(created.hash)}
+            target="_blank"
+            rel="noreferrer"
+            title={created.hash}
+          >
+            <code>{created.hash.slice(0, 12)}…</code>
+          </a>{" "}
+          <Link to={`/jobs/${created.id}`}>Open job →</Link>
         </p>
       )}
     </Layout>

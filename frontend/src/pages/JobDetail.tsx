@@ -12,7 +12,7 @@ import Layout from "../components/Layout";
 import StatusBadge from "../components/StatusBadge";
 import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
-import { fromStroops } from "../lib/stellar";
+import { explorerTxUrl, fromStroops } from "../lib/stellar";
 
 const POLL_MS = 5_000;
 
@@ -22,6 +22,7 @@ export default function JobDetail() {
   const { publicKey, connect } = useWallet();
   const [escrow, setEscrow] = useState<EscrowView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [lastHash, setLastHash] = useState<string | null>(null);
 
   const escrowId = id ? BigInt(id) : null;
 
@@ -91,7 +92,12 @@ export default function JobDetail() {
                 {isClient && isActive && !m.released && (
                   <button
                     disabled={loading}
-                    onClick={() => void releaseMilestone(escrowId, i).then(refresh)}
+                    onClick={() =>
+                      void releaseMilestone(escrowId, i).then((res) => {
+                        if (res) setLastHash(res.hash);
+                        void refresh();
+                      })
+                    }
                   >
                     Release
                   </button>
@@ -103,13 +109,32 @@ export default function JobDetail() {
           {isParticipant && isActive && (
             <button
               disabled={loading}
-              onClick={() => void openDispute(escrowId).then(refresh)}
+              onClick={() =>
+                void openDispute(escrowId).then((res) => {
+                  if (res) setLastHash(res.hash);
+                  void refresh();
+                })
+              }
             >
               Open dispute
             </button>
           )}
           {escrow.status === "Disputed" && (
             <p className="muted">This escrow is frozen pending arbitration.</p>
+          )}
+
+          {lastHash && (
+            <p>
+              Last transaction:{" "}
+              <a
+                href={explorerTxUrl(lastHash)}
+                target="_blank"
+                rel="noreferrer"
+                title={lastHash}
+              >
+                <code>{lastHash.slice(0, 12)}…</code>
+              </a>
+            </p>
           )}
         </>
       )}

@@ -53,6 +53,18 @@ export interface ReputationView {
   count: bigint;
 }
 
+/** A submitted transaction's hash plus its decoded return value. */
+export interface SubmitResult {
+  hash: string;
+  result: unknown;
+}
+
+/** Result of `createAndFund`; `hash` is the (last) `fund` transaction. */
+export interface CreateAndFundResult {
+  id: bigint;
+  hash: string;
+}
+
 export function useEscrow() {
   const { publicKey, connect, sign } = useWallet();
   const [loading, setLoading] = useState(false);
@@ -76,14 +88,17 @@ export function useEscrow() {
     [publicKey, connect],
   );
 
-  /** Submit a state-changing contract call. Returns the decoded return value. */
+  /**
+   * Submit a state-changing contract call. Returns the transaction hash and the
+   * decoded return value so callers can link to the explorer.
+   */
   const submit = useCallback(
     async (
       pk: string,
       contractId: string,
       method: string,
       args: xdr.ScVal[],
-    ): Promise<unknown> => {
+    ): Promise<SubmitResult> => {
       const built = await buildContractCall(pk, contractId, method, args);
       const signed = await sign(built.xdr);
       const tx = TransactionBuilder.fromXDR(signed, networkPassphrase);
@@ -96,26 +111,26 @@ export function useEscrow() {
         throw new Error(`Transaction ${sent.hash} failed (${receipt.status})`);
       }
       // The return value does not survive submission, so use the simulated one.
-      return built.result;
+      return { hash: sent.hash, result: built.result };
     },
     [sign],
   );
 
-  /** Create an escrow and immediately fund it. Returns the new escrow id. */
+  /** Create an escrow and immediately fund it. Returns the id and the fund hash. */
   const createAndFund = useCallback(
     (freelancer: string, milestones: MilestoneInput[], expiry: bigint) =>
-      withKey(async (pk) => {
+      withKey(async (pk): Promise<CreateAndFundResult> => {
         const escrow = CONTRACT_ADDRESSES.escrow;
-        const result = await submit(pk, escrow, "create", [
+        const created = await submit(pk, escrow, "create", [
           scAddress(pk),
           scAddress(freelancer),
           scAddress(CONTRACT_ADDRESSES.usdc),
           milestonesToScVal(milestones),
           scU64(expiry),
         ]);
-        const id = BigInt(result as bigint | number | string);
-        await submit(pk, escrow, "fund", [scU64(id)]);
-        return id;
+        const id = BigInt(created.result as bigint | number | string);
+        const funded = await submit(pk, escrow, "fund", [scU64(id)]);
+        return { id, hash: funded.hash };
       }),
     [submit, withKey],
   );
