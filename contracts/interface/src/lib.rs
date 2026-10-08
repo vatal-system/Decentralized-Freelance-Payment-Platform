@@ -73,6 +73,7 @@ pub enum EscrowError {
     InvalidShares = 13,
     Overflow = 14,
     AmountExceedsMilestone = 15,
+    DisputeTimeoutNotReached = 16,
 }
 
 // ---------------------------------------------------------------------------

@@ -56,8 +56,10 @@ fn world() -> World {
     let dispute = env.register(DisputeContract, ());
     let reputation = env.register(ReputationContract, ());
 
+    let mut panel = Vec::new(&env);
+    panel.push_back(arbitrator.clone());
     EscrowContractClient::new(&env, &escrow).init(&arbitrator, &dispute);
-    DisputeContractClient::new(&env, &dispute).init(&arbitrator);
+    DisputeContractClient::new(&env, &dispute).init(&panel, &1);
     ReputationContractClient::new(&env, &reputation).init(&arbitrator, &escrow);
 
     World {
@@ -132,12 +134,14 @@ fn dispute_path_arbitrates_then_ratings() {
     w.escrow_c().open_dispute(&id, &w.freelancer);
     assert_eq!(w.escrow_c().get(&id).status, EscrowStatus::Disputed);
 
-    // 2. The dispute contract verifies the escrow is frozen, then the
-    //    arbitrator splits the funds.
-    assert_eq!(w.dispute_c().arbitrator(), w.arbitrator);
+    // 2. The dispute contract verifies the escrow is frozen, an arbitrator
+    //    approves a split, then arbitrate splits the funds.
+    assert_eq!(w.dispute_c().threshold(), 1);
     assert_eq!(w.escrow_c().dispute_contract(), w.dispute);
     let reason = String::from_str(&w.env, "deliverable rejected");
     let dispute_id = w.dispute_c().raise(&id, &w.escrow, &w.freelancer, &reason);
+    w.dispute_c()
+        .approve(&dispute_id, &w.arbitrator, &250, &750);
     w.dispute_c().arbitrate(&dispute_id, &250, &750);
 
     assert_eq!(w.balance(&w.client), 10_000 - 1_000 + 250);

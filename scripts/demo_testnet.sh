@@ -51,7 +51,7 @@ fi
 EXPIRY=$(( $(date +%s) + 3600 ))
 # 1 XLM / 0.1 XLM in stroops, as a Vec<Milestone> JSON argument.
 # Amount (i128) is encoded as a string; deadline (u64) as a number.
-MILESTONES='[{"amount":"10000000","deadline":0,"released":false},{"amount":"1000000","deadline":0,"released":false}]'
+MILESTONES='[{"amount":"10000000","deadline":0,"released":false,"released_amount":"0"},{"amount":"1000000","deadline":0,"released":false,"released_amount":"0"}]'
 
 invoke() { stellar contract invoke --id "$1" --source "$IDENTITY" --network "$NETWORK" -- "${@:2}"; }
 
