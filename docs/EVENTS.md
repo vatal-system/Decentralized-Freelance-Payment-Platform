@@ -44,6 +44,10 @@ and, if desired, a second topic for the id/address in the `#[topic]` field.
 |-----------|-------------------|---------------------|-------------|
 | `Rated` | `rated` | `escrow_id: u64` | `rater: Address`, `ratee: Address`, `score: u32`, `count: u64`, `total_score: u64` |
 
+`count` and `total_score` are the ratee's **weighted** aggregate after this rating
+(see [`REPUTATION.md`](./REPUTATION.md)); `total_score` is `sum(score * weight)`
+and `count` the number of ratings that counted.
+
 ## Verifying this list against the source
 
 ```bash

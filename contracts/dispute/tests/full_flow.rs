@@ -121,8 +121,9 @@ fn happy_path_milestones_then_ratings() {
     w.rep_c().submit(&w.client, &w.freelancer, &id, &5);
     w.rep_c().submit(&w.freelancer, &w.client, &id, &4);
 
-    assert_eq!(w.rep_c().get_aggregate(&w.freelancer).total_score, 5);
-    assert_eq!(w.rep_c().get_aggregate(&w.client).total_score, 4);
+    // Weighted by the 1_000 escrow, so scores are scaled by 1_000.
+    assert_eq!(w.rep_c().get_aggregate(&w.freelancer).total_score, 5_000);
+    assert_eq!(w.rep_c().get_aggregate(&w.client).total_score, 4_000);
 }
 
 #[test]

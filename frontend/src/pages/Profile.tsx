@@ -21,10 +21,15 @@ export default function Profile() {
     if (address) void getReputation(address).then((r) => r && setReputation(r));
   }, [address, getReputation]);
 
-  const average =
-    reputation && reputation.count > 0n
-      ? Number(reputation.total_score) / Number(reputation.count)
-      : null;
+  // Weighted average = total_score / weight; fall back to the raw count for
+  // aggregates written before weighting existed.
+  const average = !reputation
+    ? null
+    : reputation.weight > 0n
+      ? Number(reputation.total_score) / Number(reputation.weight)
+      : reputation.count > 0n
+        ? Number(reputation.total_score) / Number(reputation.count)
+        : null;
 
   return (
     <Layout>

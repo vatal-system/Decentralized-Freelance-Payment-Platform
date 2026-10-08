@@ -164,7 +164,7 @@ Details of the dispute panel and timelock are in
 | dispute | `get` / `dispute_for` / `arbitrators` / `threshold` | views |
 | reputation | `init(admin, escrow_contract)` | one-time |
 | reputation | `submit(rater, ratee, escrow_id, score)` | verified against escrow; 1–5 |
-| reputation | `get_aggregate(address)` / `get_rating(rater, escrow_id)` | views |
+| reputation | `get_aggregate(address)` / `get_rating(rater, escrow_id)` | views; aggregate is amount-weighted (see `docs/REPUTATION.md`) |
 
 All fallible functions return a typed `Result<_, _Error>` (see the `interface`
 crate for `EscrowError`). **No `assert!`/`unwrap` in production paths.**
@@ -186,7 +186,7 @@ without exporting one another's symbols. Contract crates are pulled in only as
 ## Testing
 
 ```bash
-# Contracts: 80 tests — every state transition and failure path + 3 integration
+# Contracts: 84 tests — every state transition and failure path + 3 integration
 cd contracts
 cargo test
 cargo test -p escrow                    # one contract

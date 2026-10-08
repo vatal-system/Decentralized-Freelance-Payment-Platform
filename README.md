@@ -26,7 +26,7 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 |------|--------|
 | `escrow` contract | ✅ Complete — milestones, expiry refunds, validated inputs, TTL, events |
 | `dispute` contract | ✅ Complete — verified raise, M-of-N arbitrator panel resolution that calls back into escrow |
-| `reputation` contract | ✅ Complete — escrow-verified 1–5 ratings |
+| `reputation` contract | ✅ Complete — escrow-verified 1–5 ratings, amount-weighted aggregates (`docs/REPUTATION.md`) |
 | Contract tests | ✅ 48 tests: every state transition + failure path, plus 3 cross-contract integration tests |
 | Testnet deployment | ✅ Deployed and initialized (IDs in `deployments/testnet.json`) |
 | Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, read reputation |

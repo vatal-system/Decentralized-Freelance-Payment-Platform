@@ -89,6 +89,22 @@ impl Fx {
         self.escrow_client().release_milestone(&id, &0);
         id
     }
+
+    /// A completed escrow of `amount` between `payer` and the freelancer.
+    fn completed_with(&self, payer: &Address, amount: i128) -> u64 {
+        StellarAssetClient::new(&self.env, &self.token).mint(payer, &amount);
+        let ec = self.escrow_client();
+        let id = ec.create(
+            payer,
+            &self.freelancer,
+            &self.token,
+            &milestones(&self.env, &[amount]),
+            &10_000,
+        );
+        ec.fund(&id);
+        ec.release_milestone(&id, &0);
+        id
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,21 +133,9 @@ fn field<T: TryFromVal<Env, Val>>(env: &Env, data: &Val, name: &str) -> T {
     T::try_from_val(env, &value).unwrap()
 }
 
-#[test]
-fn rated_event_carries_resulting_aggregate() {
-    let f = setup();
-    let id = f.completed();
-    f.rep_client().submit(&f.client, &f.freelancer, &id, &5);
-
-    let data = event_data(&f.env, "rated");
-    let ratee: Address = field(&f.env, &data, "ratee");
-    let count: u64 = field(&f.env, &data, "count");
-    let total_score: u64 = field(&f.env, &data, "total_score");
-
-    assert_eq!(ratee, f.freelancer);
-    assert_eq!(count, 1);
-    assert_eq!(total_score, 5);
-}
+// ---------------------------------------------------------------------------
+// submit validation
+// ---------------------------------------------------------------------------
 
 #[test]
 fn submit_before_completion_is_rejected() {
@@ -193,6 +197,10 @@ fn duplicate_rating_is_rejected() {
     assert!(matches!(res, Err(Ok(ReputationError::AlreadyRated))));
 }
 
+// ---------------------------------------------------------------------------
+// weighted aggregate
+// ---------------------------------------------------------------------------
+
 #[test]
 fn both_parties_rate_and_aggregate_updates() {
     let f = setup();
@@ -201,17 +209,86 @@ fn both_parties_rate_and_aggregate_updates() {
     f.rep_client().submit(&f.client, &f.freelancer, &id, &5);
     f.rep_client().submit(&f.freelancer, &f.client, &id, &4);
 
+    // The escrow is 1_000, so each aggregate is weighted by 1_000.
     let freelancer_agg = f.rep_client().get_aggregate(&f.freelancer);
     assert_eq!(freelancer_agg.count, 1);
-    assert_eq!(freelancer_agg.total_score, 5);
+    assert_eq!(freelancer_agg.weight, 1_000);
+    assert_eq!(freelancer_agg.total_score, 5_000);
 
     let client_agg = f.rep_client().get_aggregate(&f.client);
     assert_eq!(client_agg.count, 1);
-    assert_eq!(client_agg.total_score, 4);
+    assert_eq!(client_agg.weight, 1_000);
+    assert_eq!(client_agg.total_score, 4_000);
 
     let rating = f.rep_client().get_rating(&f.client, &id);
     assert_eq!(rating.score, 5);
     assert_eq!(rating.ratee, f.freelancer);
+}
+
+#[test]
+fn aggregate_equal_size_jobs_is_the_plain_average() {
+    let f = setup();
+    let other_client = Address::generate(&f.env);
+    let id_a = f.completed_with(&f.client, 500);
+    let id_b = f.completed_with(&other_client, 500);
+
+    f.rep_client().submit(&f.client, &f.freelancer, &id_a, &5);
+    f.rep_client()
+        .submit(&other_client, &f.freelancer, &id_b, &3);
+
+    let agg = f.rep_client().get_aggregate(&f.freelancer);
+    assert_eq!(agg.count, 2);
+    assert_eq!(agg.weight, 1_000);
+    assert_eq!(agg.total_score, 4_000);
+    // Average = total_score / weight = 4.0
+    assert_eq!(agg.total_score / agg.weight, 4);
+}
+
+#[test]
+fn aggregate_weights_ratings_by_escrow_amount() {
+    let f = setup();
+    let big_client = Address::generate(&f.env);
+    let small = f.completed_with(&f.client, 100);
+    let big = f.completed_with(&big_client, 900);
+
+    f.rep_client().submit(&f.client, &f.freelancer, &small, &5);
+    f.rep_client().submit(&big_client, &f.freelancer, &big, &1);
+
+    let agg = f.rep_client().get_aggregate(&f.freelancer);
+    assert_eq!(agg.count, 2);
+    assert_eq!(agg.weight, 1_000);
+    // 5*100 + 1*900 = 1_400, so average 1.4 — the low score on the big job dominates.
+    assert_eq!(agg.total_score, 1_400);
+}
+
+#[test]
+fn anti_spam_only_first_rating_per_pair_counts() {
+    let f = setup();
+    // The same client completes two escrows with the same freelancer.
+    let first = f.completed_with(&f.client, 100);
+    let second = f.completed_with(&f.client, 900);
+
+    f.rep_client().submit(&f.client, &f.freelancer, &first, &5);
+    f.rep_client().submit(&f.client, &f.freelancer, &second, &1);
+
+    // Only the first (rater, ratee) pair counts, so the 900 job is ignored.
+    let agg = f.rep_client().get_aggregate(&f.freelancer);
+    assert_eq!(agg.count, 1);
+    assert_eq!(agg.weight, 100);
+    assert_eq!(agg.total_score, 500);
+}
+
+#[test]
+fn raw_ratings_are_preserved_for_both_escrows() {
+    let f = setup();
+    let first = f.completed_with(&f.client, 100);
+    let second = f.completed_with(&f.client, 900);
+    f.rep_client().submit(&f.client, &f.freelancer, &first, &5);
+    f.rep_client().submit(&f.client, &f.freelancer, &second, &1);
+
+    // Both raw ratings remain readable even though only one is weighted.
+    assert_eq!(f.rep_client().get_rating(&f.client, &first).score, 5);
+    assert_eq!(f.rep_client().get_rating(&f.client, &second).score, 1);
 }
 
 #[test]
@@ -220,6 +297,27 @@ fn aggregate_for_unknown_address_is_empty() {
     let agg = f.rep_client().get_aggregate(&Address::generate(&f.env));
     assert_eq!(agg.count, 0);
     assert_eq!(agg.total_score, 0);
+    assert_eq!(agg.weight, 0);
+}
+
+// ---------------------------------------------------------------------------
+// events
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rated_event_carries_resulting_aggregate() {
+    let f = setup();
+    let id = f.completed();
+    f.rep_client().submit(&f.client, &f.freelancer, &id, &5);
+
+    let data = event_data(&f.env, "rated");
+    let ratee: Address = field(&f.env, &data, "ratee");
+    let count: u64 = field(&f.env, &data, "count");
+    let total_score: u64 = field(&f.env, &data, "total_score");
+
+    assert_eq!(ratee, f.freelancer);
+    assert_eq!(count, 1);
+    assert_eq!(total_score, 5_000);
 }
 
 // ---------------------------------------------------------------------------

@@ -52,7 +52,10 @@ export interface EscrowView {
 }
 
 export interface ReputationView {
+  /** Weight-summed score; average = total_score / weight. */
   total_score: bigint;
+  /** Sum of the weights (escrow amounts) behind the counted ratings. */
+  weight: bigint;
   count: bigint;
 }
 
