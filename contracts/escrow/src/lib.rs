@@ -104,6 +104,15 @@ pub struct Refunded {
     pub amount: i128,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestonesUpdated {
+    #[topic]
+    pub escrow_id: u64,
+    pub count: u32,
+    pub total_amount: i128,
+}
+
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -204,6 +213,51 @@ impl EscrowContract {
         }
         .publish(&env);
         Ok(id)
+    }
+
+    /// Replace the milestone breakdown while the escrow is still unfunded.
+    ///
+    /// Only allowed in `Created` state (before any money moves) and only for the
+    /// client. Re-runs the same validation as [`create`] and recomputes the
+    /// stored `total_amount`.
+    pub fn update_milestones(
+        env: Env,
+        escrow_id: u64,
+        milestones: Vec<Milestone>,
+    ) -> Result<(), EscrowError> {
+        let mut escrow = Self::load(&env, escrow_id)?;
+        escrow.client.require_auth();
+
+        // Funds are already committed once the escrow is Active.
+        if escrow.status != EscrowStatus::Created {
+            return Err(EscrowError::InvalidStatus);
+        }
+        if milestones.is_empty() {
+            return Err(EscrowError::InvalidMilestones);
+        }
+
+        let mut total_amount: i128 = 0;
+        for m in milestones.iter() {
+            if m.amount <= 0 {
+                return Err(EscrowError::ZeroAmount);
+            }
+            total_amount = total_amount
+                .checked_add(m.amount)
+                .ok_or(EscrowError::Overflow)?;
+        }
+
+        let count = milestones.len();
+        escrow.milestones = milestones;
+        escrow.total_amount = total_amount;
+        Self::save(&env, escrow_id, &escrow);
+
+        MilestonesUpdated {
+            escrow_id,
+            count,
+            total_amount,
+        }
+        .publish(&env);
+        Ok(())
     }
 
     /// Client deposits funds, moving escrow from Created to Active.

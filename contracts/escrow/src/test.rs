@@ -171,6 +171,78 @@ fn create_rejects_same_counterparty() {
 }
 
 // ---------------------------------------------------------------------------
+// update_milestones
+// ---------------------------------------------------------------------------
+
+#[test]
+fn update_milestones_replaces_breakdown_and_total() {
+    let f = fixture();
+    let id = f.c().create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones(&f.env, &[300, 700]),
+        &10_000,
+    );
+
+    f.c()
+        .update_milestones(&id, &milestones(&f.env, &[100, 200, 300]));
+
+    let data = f.c().get(&id);
+    assert_eq!(data.status, EscrowStatus::Created, "still unfunded");
+    assert_eq!(data.total_amount, 600);
+    assert_eq!(data.milestones.len(), 3);
+    assert_eq!(data.milestones.get(0).unwrap().amount, 100);
+    assert_eq!(data.milestones.get(2).unwrap().amount, 300);
+}
+
+#[test]
+fn update_milestones_after_fund_is_rejected() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    let res = f
+        .c()
+        .try_update_milestones(&id, &milestones(&f.env, &[500]));
+    assert!(matches!(res, Err(Ok(EscrowError::InvalidStatus))));
+    // The original breakdown is untouched.
+    assert_eq!(f.c().get(&id).total_amount, 1_000);
+}
+
+#[test]
+fn update_milestones_rejects_empty_and_bad_amounts() {
+    let f = fixture();
+    let id = f.c().create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones(&f.env, &[300, 700]),
+        &10_000,
+    );
+
+    let res = f.c().try_update_milestones(&id, &milestones(&f.env, &[]));
+    assert!(matches!(res, Err(Ok(EscrowError::InvalidMilestones))));
+
+    for amounts in [&[0i128][..], &[100, 0][..], &[-5][..]] {
+        let res = f
+            .c()
+            .try_update_milestones(&id, &milestones(&f.env, amounts));
+        assert!(
+            matches!(res, Err(Ok(EscrowError::ZeroAmount))),
+            "amounts {amounts:?} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn update_milestones_unknown_escrow_is_rejected() {
+    let f = fixture();
+    let res = f
+        .c()
+        .try_update_milestones(&999, &milestones(&f.env, &[100]));
+    assert!(matches!(res, Err(Ok(EscrowError::NotFound))));
+}
+
+// ---------------------------------------------------------------------------
 // fund
 // ---------------------------------------------------------------------------
 
@@ -505,6 +577,22 @@ fn fund_requires_client_auth() {
     );
     f.env.set_auths(&[]);
     f.c().fund(&id);
+}
+
+#[test]
+#[should_panic]
+fn update_milestones_requires_client_auth() {
+    // A non-client cannot produce the client's authorization, so the call panics.
+    let f = fixture();
+    let id = f.c().create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones(&f.env, &[1_000]),
+        &10_000,
+    );
+    f.env.set_auths(&[]);
+    f.c().update_milestones(&id, &milestones(&f.env, &[500]));
 }
 
 #[test]
