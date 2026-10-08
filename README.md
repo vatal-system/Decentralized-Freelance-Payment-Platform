@@ -30,8 +30,8 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | Contract tests | ✅ 48 tests: every state transition + failure path, plus 3 cross-contract integration tests |
 | Testnet deployment | ✅ Deployed and initialized (IDs in `deployments/testnet.json`) |
 | Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, read reputation |
-| Backend API | 🟡 Routes + auth implemented; **event indexer is still a stub** (DB does not sync from chain yet) |
-| Job discovery / filtering | ❌ Not built — you open jobs by id |
+| Backend API | ✅ Routes + auth implemented; contract-event indexer syncs DB state from Soroban RPC |
+| Job discovery / filtering | ✅ Dashboard lists jobs with status/pagination (from the backend API) |
 | Multi-arbitrator / timelocked disputes | ✅ Multi-arbitrator panel with a timelock escape hatch from `Disputed` (see `docs/DISPUTES.md`) |
 | USDC configuration | ❌ Not wired on testnet yet — the demo uses the XLM SAC |
 | Security audit | ❌ Not audited |
