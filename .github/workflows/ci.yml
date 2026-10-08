@@ -7,6 +7,60 @@ on:
     branches: [main]
 
 jobs:
+  contracts:
+    name: Contracts – fmt, clippy, test, wasm
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          # Soroban SDK v28+ builds for wasm32v1-none (not wasm32-unknown-unknown).
+          targets: wasm32v1-none
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      # The Soroban SDK build script requires stellar-cli v25.2.0+ to build wasm.
+      - uses: stellar/stellar-cli@v28.1.0
+
+      - name: Build wasm
+        run: stellar contract build
+
+  frontend:
+    name: Frontend – lint, typecheck, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm run build
+
   backend:
     name: Backend – typecheck & test
     runs-on: ubuntu-latest
@@ -15,50 +69,14 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: backend/package-lock.json
+
       - run: npm ci
       - run: npx prisma generate
       - run: npx tsc --noEmit
       - run: npm test
-
-  frontend:
-    name: Frontend – typecheck & build
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
-      - run: npx tsc --noEmit
-      - run: npm run build
-
-  contracts:
-    name: Contracts – build & test
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: contracts
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: contracts
-      # Build for wasm WITHOUT testutils (testutils is dev-only and wasm-incompatible)
-      - name: Build wasm
-        run: cargo build --target wasm32-unknown-unknown --release
-      # Run tests natively (testutils only activates in dev/test builds on native target)
-      - name: Test (native)
-        run: cargo test

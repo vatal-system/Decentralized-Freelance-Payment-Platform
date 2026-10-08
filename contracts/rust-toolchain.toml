@@ -1,0 +1,7 @@
+# Pins the toolchain and installs the components/target the contracts need.
+# rustup picks this up automatically when you run cargo/stellar inside contracts/.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+# Soroban SDK v28+ targets wasm32v1-none.
+targets = ["wasm32v1-none"]
