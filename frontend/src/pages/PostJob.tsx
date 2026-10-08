@@ -4,10 +4,12 @@
  * Client form to create a new escrow job with a milestone breakdown.
  *
  * Flow:
- *   1. Choose the payment asset, then enter freelancer address + milestone
- *      amounts + expiry.
- *   2. `createAndFund` runs escrow.create() then escrow.fund().
- *   3. Redirect-free: show the transaction hash and a link to the new job.
+ *   1. Choose the payment asset, then enter the title, freelancer address,
+ *      milestone amounts and expiry.
+ *   2. `createAndFund` runs escrow.create() then escrow.fund() on-chain.
+ *   3. Persist the off-chain job record via POST /api/jobs (authenticating the
+ *      wallet first) so the job — and the asset it pays in — appears in the
+ *      Dashboard list, then link the on-chain escrow id.
  *
  * The escrow contract is asset-agnostic; `lib/assets.ts` maps the chosen symbol
  * to its SAC contract id and decimals.
@@ -19,6 +21,7 @@ import Layout from "../components/Layout";
 import { useEscrow, type CreateAndFundResult } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { ASSETS, getAsset, toBaseUnits } from "../lib/assets";
+import { authenticate, createJob, linkEscrowId } from "../lib/api";
 import { CONTRACT_ADDRESSES, explorerTxUrl } from "../lib/stellar";
 
 interface MilestoneRow {
@@ -27,13 +30,16 @@ interface MilestoneRow {
 
 export default function PostJob() {
   const { createAndFund, isPending, error } = useEscrow();
-  const { publicKey, connect, connecting } = useWallet();
+  const { publicKey, connect, connecting, signMessage } = useWallet();
 
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [freelancer, setFreelancer] = useState("");
   const [assetSymbol, setAssetSymbol] = useState(ASSETS[0]?.symbol ?? "USDC");
   const [expiryDays, setExpiryDays] = useState("30");
   const [rows, setRows] = useState<MilestoneRow[]>([{ amount: "" }]);
   const [created, setCreated] = useState<CreateAndFundResult | null>(null);
+  const [recordError, setRecordError] = useState<string | null>(null);
 
   const asset = getAsset(assetSymbol);
 
@@ -51,14 +57,44 @@ export default function PostJob() {
     if (!asset.contractId) return;
     if (rows.some((r) => !(Number(r.amount) > 0))) return;
 
-    const expiry = BigInt(Math.floor(Date.now() / 1000) + Number(expiryDays) * 86400);
+    setRecordError(null);
+    const expirySeconds = Math.floor(Date.now() / 1000) + Number(expiryDays) * 86400;
+    const expiry = BigInt(expirySeconds);
+
+    // 1. On-chain: create + fund the escrow.
     const result = await createAndFund(
       freelancer.trim(),
       asset.contractId,
       rows.map((r) => ({ amount: toBaseUnits(r.amount, asset.decimals), deadline: 0n })),
       expiry,
     );
-    if (result) setCreated(result);
+    if (!result) return;
+    setCreated(result);
+
+    // 2. Off-chain: store the job record (and its asset) and link the escrow.
+    try {
+      const token = await authenticate(publicKey, signMessage);
+      const expiresAt = new Date(expirySeconds * 1000).toISOString();
+      const job = await createJob(
+        {
+          title: title.trim(),
+          description: description.trim(),
+          asset: asset.symbol,
+          expiresAt,
+          milestones: rows.map((r, i) => ({
+            description: `Milestone ${i + 1}`,
+            amountUsdc: Number(r.amount),
+            deadline: expiresAt,
+          })),
+        },
+        token,
+      );
+      await linkEscrowId(job.id, Number(result.id), token);
+    } catch (e) {
+      setRecordError(
+        e instanceof Error ? e.message : "Could not save the job record",
+      );
+    }
   }
 
   return (
@@ -79,6 +115,38 @@ export default function PostJob() {
       )}
 
       <form onSubmit={handleSubmit}>
+        <p>
+          <label>
+            Title
+            <br />
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Landing page redesign"
+              minLength={3}
+              maxLength={120}
+              size={60}
+              required
+            />
+          </label>
+        </p>
+
+        <p>
+          <label>
+            Description
+            <br />
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What needs to be delivered…"
+              minLength={10}
+              rows={3}
+              cols={60}
+              required
+            />
+          </label>
+        </p>
+
         <p>
           <label>
             Payment asset{" "}
@@ -184,6 +252,12 @@ export default function PostJob() {
             <code>{created.hash.slice(0, 12)}…</code>
           </a>{" "}
           <Link to={`/jobs/${created.id}`}>Open job →</Link>
+        </p>
+      )}
+
+      {recordError && (
+        <p role="alert" className="alert alert-error">
+          On-chain escrow created, but the job record was not saved: {recordError}
         </p>
       )}
     </Layout>

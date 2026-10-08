@@ -18,7 +18,6 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import { Keypair } from "@stellar/stellar-sdk";
 import { SignJWT } from "jose";
 import { prisma } from "../db";
 import { config } from "../config";
@@ -26,6 +25,7 @@ import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import { AppError } from "../middleware/errorHandler";
 import { consumeNonce, issueNonce, type AuthNonceStore } from "../lib/authNonce";
+import { verifySignedMessage } from "../lib/signature";
 
 export const usersRouter = Router();
 
@@ -63,10 +63,10 @@ usersRouter.post("/auth", validate(authSchema), async (req, res, next) => {
     const consumed = await consumeNonce(nonceStore, address, nonce);
     if (!consumed) throw new AppError(401, "Invalid or expired nonce");
 
-    // Verify the signature
-    const keypair = Keypair.fromPublicKey(address);
-    const valid = keypair.verify(Buffer.from(nonce), Buffer.from(signature, "base64"));
-    if (!valid) throw new AppError(401, "Signature verification failed");
+    // Verify the SEP-53 signature the wallet produced over the nonce.
+    if (!verifySignedMessage(address, nonce, signature)) {
+      throw new AppError(401, "Signature verification failed");
+    }
 
     // Upsert user
     const user = await prisma.user.upsert({

@@ -39,9 +39,22 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return api.signTransaction(xdr, { networkPassphrase });
   }, []);
 
+  const signMessage = useCallback(
+    async (message: string) => {
+      const api = freighter();
+      if (!api) throw new Error("Freighter wallet not found");
+      if (!api.signMessage) {
+        throw new Error("This Freighter version can't sign messages; update the extension.");
+      }
+      const result = await api.signMessage(message, publicKey ? { address: publicKey } : undefined);
+      return typeof result === "string" ? result : result.signature;
+    },
+    [publicKey],
+  );
+
   const value = useMemo(
-    () => ({ publicKey, connecting, error, connect, disconnect, sign }),
-    [publicKey, connecting, error, connect, disconnect, sign],
+    () => ({ publicKey, connecting, error, connect, disconnect, sign, signMessage }),
+    [publicKey, connecting, error, connect, disconnect, sign, signMessage],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;

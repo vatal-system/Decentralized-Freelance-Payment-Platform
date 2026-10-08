@@ -19,6 +19,11 @@ export interface FreighterApi {
     xdr: string,
     opts?: { networkPassphrase?: string; address?: string },
   ): Promise<string>;
+  /** SEP-53 message signing. Newer versions return an object, older a string. */
+  signMessage?(
+    message: string,
+    opts?: { address?: string },
+  ): Promise<{ signature: string } | string>;
 }
 
 declare global {
@@ -40,6 +45,8 @@ export interface WalletContextValue {
   connect: () => Promise<string | null>;
   disconnect: () => void;
   sign: (xdr: string) => Promise<string>;
+  /** Sign a message per SEP-53; returns the base64 signature. */
+  signMessage: (message: string) => Promise<string>;
 }
 
 export const WalletContext = createContext<WalletContextValue | null>(null);
