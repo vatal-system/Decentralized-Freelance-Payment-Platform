@@ -14,7 +14,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useEscrow } from "../hooks/useEscrow";
-import { useWallet } from "../hooks/useWallet";
+import { useWallet } from "../hooks/wallet-context";
 import { CONTRACT_ADDRESSES, toStroops } from "../lib/stellar";
 
 interface MilestoneRow {

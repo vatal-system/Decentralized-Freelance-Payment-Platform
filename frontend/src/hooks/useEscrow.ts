@@ -28,7 +28,7 @@ import {
   server,
   type MilestoneInput,
 } from "../lib/stellar";
-import { useWallet } from "./useWallet";
+import { useWallet } from "./wallet-context";
 
 export interface MilestoneView {
   amount: bigint;

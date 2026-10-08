@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useEscrow, type ReputationView } from "../hooks/useEscrow";
-import { useWallet } from "../hooks/useWallet";
+import { useWallet } from "../hooks/wallet-context";
 
 export default function Profile() {
   const { address } = useParams<{ address: string }>();

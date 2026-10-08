@@ -9,7 +9,7 @@
 
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useWallet } from "../hooks/useWallet";
+import { useWallet } from "../hooks/wallet-context";
 
 export default function Dashboard() {
   const { publicKey, connecting, connect, error } = useWallet();

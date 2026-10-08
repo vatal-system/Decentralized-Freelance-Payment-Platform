@@ -11,7 +11,8 @@
  */
 
 import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
-import { WalletProvider, useWallet } from "./hooks/useWallet";
+import { WalletProvider } from "./hooks/WalletProvider";
+import { useWallet } from "./hooks/wallet-context";
 import Dashboard from "./pages/Dashboard";
 import PostJob from "./pages/PostJob";
 import JobDetail from "./pages/JobDetail";

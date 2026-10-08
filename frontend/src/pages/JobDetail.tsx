@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useEscrow, type EscrowView } from "../hooks/useEscrow";
-import { useWallet } from "../hooks/useWallet";
+import { useWallet } from "../hooks/wallet-context";
 import { fromStroops } from "../lib/stellar";
 
 const POLL_MS = 5_000;
