@@ -34,6 +34,7 @@ import { useWallet } from "./wallet-context";
 export interface MilestoneView {
   amount: bigint;
   released: boolean;
+  released_amount: bigint;
   deadline: bigint;
 }
 

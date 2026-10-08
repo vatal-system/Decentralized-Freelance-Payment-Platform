@@ -18,11 +18,18 @@ describe("milestonesToScVal", () => {
       "amount",
       "deadline",
       "released",
+      "released_amount",
     ]);
-    expect(decoded[0]).toEqual({ amount: 300n, released: false, deadline: 0n });
+    expect(decoded[0]).toEqual({
+      amount: 300n,
+      released: false,
+      released_amount: 0n,
+      deadline: 0n,
+    });
     expect(decoded[1]).toEqual({
       amount: 700n,
       released: false,
+      released_amount: 0n,
       deadline: 1_700_000_000n,
     });
   });

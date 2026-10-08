@@ -88,7 +88,12 @@ export default function JobDetail() {
           <ol>
             {escrow.milestones.map((m, i) => (
               <li key={i}>
-                {fromStroops(m.amount)} — {m.released ? "released" : "pending"}{" "}
+                {fromStroops(m.amount)} —{" "}
+                {m.released
+                  ? "released"
+                  : `${fromStroops(m.released_amount)} released, ${fromStroops(
+                      m.amount - m.released_amount,
+                    )} remaining`}{" "}
                 {isClient && isActive && !m.released && (
                   <button
                     disabled={loading}

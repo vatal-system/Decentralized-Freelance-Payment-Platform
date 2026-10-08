@@ -314,7 +314,14 @@ impl EscrowContract {
             return Err(EscrowError::MilestoneAlreadyReleased);
         }
 
+        // Release whatever is still outstanding on this milestone.
+        let amount = milestone
+            .amount
+            .checked_sub(milestone.released_amount)
+            .ok_or(EscrowError::Overflow)?;
+
         // Effects before interaction.
+        milestone.released_amount = milestone.amount;
         milestone.released = true;
         escrow.milestones.set(milestone_index, milestone.clone());
 
@@ -324,18 +331,83 @@ impl EscrowContract {
         }
         Self::save(&env, escrow_id, &escrow);
 
-        // Interaction: pay freelancer.
+        // Interaction: pay freelancer the remaining amount.
         let contract = env.current_contract_address();
-        token::Client::new(&env, &escrow.token).transfer(
-            &contract,
-            &escrow.freelancer,
-            &milestone.amount,
-        );
+        token::Client::new(&env, &escrow.token).transfer(&contract, &escrow.freelancer, &amount);
 
         MilestoneReleased {
             escrow_id,
             index: milestone_index,
-            amount: milestone.amount,
+            amount,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Release part of a milestone to the freelancer.
+    ///
+    /// Mirrors [`release_milestone`] (client auth, `Active` only) but pays only
+    /// `amount`. The milestone is marked released once its full amount has been
+    /// paid; the escrow completes when every milestone is released.
+    pub fn release_partial(
+        env: Env,
+        escrow_id: u64,
+        milestone_index: u32,
+        amount: i128,
+    ) -> Result<(), EscrowError> {
+        let mut escrow = Self::load(&env, escrow_id)?;
+        escrow.client.require_auth();
+
+        if escrow.status != EscrowStatus::Active {
+            return Err(EscrowError::InvalidStatus);
+        }
+        if milestone_index >= escrow.milestones.len() {
+            return Err(EscrowError::MilestoneIndexOutOfBounds);
+        }
+        if amount <= 0 {
+            return Err(EscrowError::ZeroAmount);
+        }
+
+        let mut milestone = escrow
+            .milestones
+            .get(milestone_index)
+            .ok_or(EscrowError::MilestoneIndexOutOfBounds)?;
+        if milestone.released {
+            return Err(EscrowError::MilestoneAlreadyReleased);
+        }
+
+        let remaining_on_milestone = milestone
+            .amount
+            .checked_sub(milestone.released_amount)
+            .ok_or(EscrowError::Overflow)?;
+        if amount > remaining_on_milestone {
+            return Err(EscrowError::AmountExceedsMilestone);
+        }
+
+        // Effects before interaction.
+        milestone.released_amount = milestone
+            .released_amount
+            .checked_add(amount)
+            .ok_or(EscrowError::Overflow)?;
+        if milestone.released_amount == milestone.amount {
+            milestone.released = true;
+        }
+        escrow.milestones.set(milestone_index, milestone);
+
+        let all_done = escrow.milestones.iter().all(|m| m.released);
+        if all_done {
+            escrow.status = EscrowStatus::Completed;
+        }
+        Self::save(&env, escrow_id, &escrow);
+
+        // Interaction: pay the freelancer.
+        let contract = env.current_contract_address();
+        token::Client::new(&env, &escrow.token).transfer(&contract, &escrow.freelancer, &amount);
+
+        MilestoneReleased {
+            escrow_id,
+            index: milestone_index,
+            amount,
         }
         .publish(&env);
         Ok(())
@@ -401,10 +473,11 @@ impl EscrowContract {
             return Err(EscrowError::InvalidShares);
         }
 
-        // Effects before interaction: mark every milestone released and complete.
+        // Effects before interaction: mark every milestone fully released and complete.
         for i in 0..escrow.milestones.len() {
             let mut m = escrow.milestones.get(i).unwrap();
             m.released = true;
+            m.released_amount = m.amount;
             escrow.milestones.set(i, m);
         }
         escrow.status = EscrowStatus::Completed;
@@ -483,13 +556,15 @@ impl EscrowContract {
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    /// Sum of milestones that have not been released yet (funds still held).
+    /// Sum of amounts still unpaid across all milestones (funds still held).
     fn remaining(escrow: &EscrowData) -> Result<i128, EscrowError> {
         let mut total: i128 = 0;
         for m in escrow.milestones.iter() {
-            if !m.released {
-                total = total.checked_add(m.amount).ok_or(EscrowError::Overflow)?;
-            }
+            let unpaid = m
+                .amount
+                .checked_sub(m.released_amount)
+                .ok_or(EscrowError::Overflow)?;
+            total = total.checked_add(unpaid).ok_or(EscrowError::Overflow)?;
         }
         Ok(total)
     }

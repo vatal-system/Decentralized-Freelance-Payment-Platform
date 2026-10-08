@@ -32,6 +32,7 @@ fn milestones(env: &Env, amounts: &[i128]) -> Vec<Milestone> {
         v.push_back(Milestone {
             amount: *a,
             released: false,
+            released_amount: 0,
             deadline: 0,
         });
     }
@@ -333,6 +334,94 @@ fn release_before_funding_is_rejected() {
     );
     let res = f.c().try_release_milestone(&id, &0);
     assert!(matches!(res, Err(Ok(EscrowError::InvalidStatus))));
+}
+
+// ---------------------------------------------------------------------------
+// release_partial
+// ---------------------------------------------------------------------------
+
+#[test]
+fn release_partial_then_remainder_completes() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+
+    f.c().release_partial(&id, &0, &300);
+    assert_eq!(f.balance(&f.freelancer), 300);
+    assert_eq!(
+        f.c().get(&id).status,
+        EscrowStatus::Active,
+        "700 outstanding"
+    );
+    let m = f.c().get(&id).milestones.get(0).unwrap();
+    assert_eq!(m.released_amount, 300);
+    assert!(!m.released);
+
+    // `release_milestone` pays the remaining 700 and completes the escrow.
+    f.c().release_milestone(&id, &0);
+    assert_eq!(f.balance(&f.freelancer), 1_000);
+    assert_eq!(f.c().get(&id).status, EscrowStatus::Completed);
+}
+
+#[test]
+fn release_partial_sum_reaching_amount_flips_released() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+
+    f.c().release_partial(&id, &0, &300);
+    f.c().release_partial(&id, &0, &700);
+
+    let m = f.c().get(&id).milestones.get(0).unwrap();
+    assert_eq!(m.released_amount, 1_000);
+    assert!(m.released);
+    assert_eq!(f.c().get(&id).status, EscrowStatus::Completed);
+    assert_eq!(f.balance(&f.freelancer), 1_000);
+}
+
+#[test]
+fn release_partial_over_release_is_rejected() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+
+    let res = f.c().try_release_partial(&id, &0, &1_001);
+    assert!(matches!(res, Err(Ok(EscrowError::AmountExceedsMilestone))));
+
+    // The cap is cumulative: 400 + 601 > 1_000.
+    f.c().release_partial(&id, &0, &400);
+    let res = f.c().try_release_partial(&id, &0, &601);
+    assert!(matches!(res, Err(Ok(EscrowError::AmountExceedsMilestone))));
+}
+
+#[test]
+fn release_partial_rejects_zero_and_negative() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    for amount in [0i128, -1] {
+        let res = f.c().try_release_partial(&id, &0, &amount);
+        assert!(
+            matches!(res, Err(Ok(EscrowError::ZeroAmount))),
+            "amount {amount} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn release_partial_after_dispute_is_rejected() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    f.c().open_dispute(&id, &f.client);
+    let res = f.c().try_release_partial(&id, &0, &100);
+    assert!(matches!(res, Err(Ok(EscrowError::InvalidStatus))));
+}
+
+#[test]
+fn release_partial_out_of_bounds_is_rejected() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    let res = f.c().try_release_partial(&id, &2, &100);
+    assert!(matches!(
+        res,
+        Err(Ok(EscrowError::MilestoneIndexOutOfBounds))
+    ));
 }
 
 // ---------------------------------------------------------------------------

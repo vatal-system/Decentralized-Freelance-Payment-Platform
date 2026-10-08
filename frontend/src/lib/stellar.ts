@@ -108,6 +108,10 @@ export function milestonesToScVal(milestones: MilestoneInput[]): xdr.ScVal {
         val: xdr.ScVal.scvBool(false),
       }),
       new xdr.ScMapEntry({
+        key: xdr.ScVal.scvSymbol("released_amount"),
+        val: scI128(0n),
+      }),
+      new xdr.ScMapEntry({
         key: xdr.ScVal.scvSymbol("deadline"),
         val: scU64(m.deadline),
       }),

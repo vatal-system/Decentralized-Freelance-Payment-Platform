@@ -28,7 +28,10 @@ pub enum EscrowStatus {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Milestone {
     pub amount: i128,
+    /// `true` once `released_amount == amount` (all of it has been paid out).
     pub released: bool,
+    /// How much of `amount` has already been released (starts at 0).
+    pub released_amount: i128,
     /// Unix timestamp after which the client may reclaim this milestone.
     pub deadline: u64,
 }
@@ -69,6 +72,7 @@ pub enum EscrowError {
     NotInitialized = 12,
     InvalidShares = 13,
     Overflow = 14,
+    AmountExceedsMilestone = 15,
 }
 
 // ---------------------------------------------------------------------------

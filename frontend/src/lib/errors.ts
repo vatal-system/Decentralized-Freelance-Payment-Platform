@@ -35,6 +35,7 @@ const CONTRACT_ERROR_MESSAGES: Record<number, string> = {
   12: "This contract isn't initialized yet.",
   13: "The payout shares don't match the funds still held in escrow.",
   14: "A numeric overflow occurred.",
+  15: "That amount is more than what's left on the milestone.",
 };
 
 /** Extract the `#N` discriminant from a Soroban contract error, if present. */

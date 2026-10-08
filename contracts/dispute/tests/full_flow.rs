@@ -31,6 +31,7 @@ fn milestones(env: &Env, amounts: &[i128]) -> Vec<Milestone> {
         v.push_back(Milestone {
             amount: *a,
             released: false,
+            released_amount: 0,
             deadline: 0,
         });
     }
