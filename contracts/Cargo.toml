@@ -1,13 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
+    "interface",
     "escrow",
     "dispute",
     "reputation",
 ]
 
 [workspace.dependencies]
-soroban-sdk = { version = "21.0.0" }
+soroban-sdk = "29.0.0"
 
 [profile.release]
 opt-level = "z"

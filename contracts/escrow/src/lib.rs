@@ -5,80 +5,103 @@
 //!
 //! # State Machine
 //!
-//!   Created → Funded → Active → Completed
-//!                  ↘ Disputed → Resolved
-//!                  ↘ Expired  → Refunded
+//!   Created → Active → Completed
+//!                  ↘ Disputed → Completed (via dispute contract)
+//!                  ↘ Refunded (via reclaim_expired)
 //!
 //! # Contributor Notes
 //! - All token transfers use the Stellar Asset Contract (SAC) interface.
-//! - Checks-Effects-Interactions pattern must be preserved in every state transition.
-//! - Add new milestone logic inside `release_milestone`, not in `complete`.
+//! - Checks-Effects-Interactions pattern is preserved in every state transition:
+//!   storage is updated *before* any token transfer.
+//! - `resolve` is callable only by the dispute contract registered in `init`.
+//! - Persistent and instance storage entries are TTL-extended on every mutation
+//!   and on reads, so live escrows do not fall out of the ledger.
+//! - Errors are returned as [`EscrowError`]; no `assert!`/`unwrap` in production paths.
 
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, Vec,
-};
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, token, Address, Env, Vec};
+
+// Shared with the dispute and reputation contracts via the `interface` crate.
+pub use interface::{EscrowData, EscrowError, EscrowStatus, Milestone};
+
+// ---------------------------------------------------------------------------
+// TTL constants (in ledgers; ~5s per ledger)
+// ---------------------------------------------------------------------------
+
+/// Approximate number of ledgers in a day (24h * 60m * 60s / 5s).
+const DAY_IN_LEDGERS: u32 = 17_280;
+/// Extend a storage entry when its remaining TTL drops below this.
+const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
+/// Extend a storage entry out to this many ledgers from now.
+const TTL_EXTEND_TO: u32 = 90 * DAY_IN_LEDGERS;
 
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
 
 #[contracttype]
-#[derive(Clone, PartialEq)]
-pub enum EscrowStatus {
-    Created,
-    Funded,
-    Active,
-    Completed,
-    Disputed,
-    Refunded,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct Milestone {
-    pub amount: i128,
-    pub released: bool,
-    /// Unix timestamp after which the client may reclaim this milestone
-    pub deadline: u64,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct EscrowData {
-    pub client: Address,
-    pub freelancer: Address,
-    pub token: Address,
-    pub total_amount: i128,
-    pub milestones: Vec<Milestone>,
-    pub status: EscrowStatus,
-    pub created_at: u64,
-    /// Safety timelock: if no activity by this timestamp, client can reclaim
-    pub expiry: u64,
-}
-
-#[contracttype]
 pub enum DataKey {
     Escrow(u64),
     Counter,
+    Admin,
+    DisputeContract,
 }
 
 // ---------------------------------------------------------------------------
-// Errors
+// Events
 // ---------------------------------------------------------------------------
 
-#[contracttype]
-#[derive(Copy, Clone, Debug, PartialEq)]
-#[repr(u32)]
-pub enum EscrowError {
-    NotFound = 1,
-    InvalidStatus = 2,
-    Unauthorized = 3,
-    MilestoneAlreadyReleased = 4,
-    MilestoneIndexOutOfBounds = 5,
-    NotExpired = 6,
-    ZeroAmount = 7,
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Created {
+    #[topic]
+    pub client: Address,
+    pub escrow_id: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Funded {
+    #[topic]
+    pub client: Address,
+    pub escrow_id: u64,
+    pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneReleased {
+    #[topic]
+    pub escrow_id: u64,
+    pub index: u32,
+    pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeOpened {
+    #[topic]
+    pub escrow_id: u64,
+    pub initiator: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Resolved {
+    #[topic]
+    pub escrow_id: u64,
+    pub client_share: i128,
+    pub freelancer_share: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Refunded {
+    #[topic]
+    pub escrow_id: u64,
+    pub client: Address,
+    pub amount: i128,
 }
 
 // ---------------------------------------------------------------------------
@@ -90,14 +113,46 @@ pub struct EscrowContract;
 
 #[contractimpl]
 impl EscrowContract {
+    /// One-time initialization.
+    ///
+    /// - `admin`            – address allowed to rotate the dispute contract.
+    /// - `dispute_contract` – the only address permitted to call [`resolve`].
+    pub fn init(env: Env, admin: Address, dispute_contract: Address) -> Result<(), EscrowError> {
+        admin.require_auth();
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(EscrowError::AlreadyInitialized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::DisputeContract, &dispute_contract);
+        Self::extend_instance(&env);
+        Ok(())
+    }
+
+    /// Rotate the dispute contract. Admin only.
+    pub fn set_dispute_contract(env: Env, dispute_contract: Address) -> Result<(), EscrowError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(EscrowError::NotInitialized)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::DisputeContract, &dispute_contract);
+        Self::extend_instance(&env);
+        Ok(())
+    }
+
     /// Create a new escrow job.
     ///
     /// # Arguments
-    /// - `client`      – party funding the job
-    /// - `freelancer`  – party delivering the work
-    /// - `token`       – SAC-compatible token address (e.g. USDC)
-    /// - `milestones`  – ordered list of milestone amounts; must sum to total
-    /// - `expiry`      – unix timestamp safety deadline
+    /// - `client`     – party funding the job
+    /// - `freelancer` – party delivering the work
+    /// - `token`      – SAC-compatible token address (e.g. USDC)
+    /// - `milestones` – ordered list of milestones; each amount must be > 0
+    /// - `expiry`     – unix timestamp safety deadline, must be in the future
     ///
     /// Returns the new escrow ID.
     pub fn create(
@@ -107,13 +162,30 @@ impl EscrowContract {
         token: Address,
         milestones: Vec<Milestone>,
         expiry: u64,
-    ) -> u64 {
+    ) -> Result<u64, EscrowError> {
         client.require_auth();
 
-        // TODO: validate milestones sum > 0 and expiry > now
-        let total_amount: i128 = milestones.iter().map(|m| m.amount).sum();
+        if milestones.is_empty() {
+            return Err(EscrowError::InvalidMilestones);
+        }
+        if client == freelancer {
+            return Err(EscrowError::InvalidCounterparty);
+        }
+        if expiry <= env.ledger().timestamp() {
+            return Err(EscrowError::InvalidExpiry);
+        }
 
-        let id = Self::next_id(&env);
+        let mut total_amount: i128 = 0;
+        for m in milestones.iter() {
+            if m.amount <= 0 {
+                return Err(EscrowError::ZeroAmount);
+            }
+            total_amount = total_amount
+                .checked_add(m.amount)
+                .ok_or(EscrowError::Overflow)?;
+        }
+
+        let id = Self::next_id(&env)?;
         let escrow = EscrowData {
             client,
             freelancer,
@@ -124,195 +196,289 @@ impl EscrowContract {
             created_at: env.ledger().timestamp(),
             expiry,
         };
-        env.storage().persistent().set(&DataKey::Escrow(id), &escrow);
-        id
+        Self::save(&env, id, &escrow);
+
+        Created {
+            client: escrow.client.clone(),
+            escrow_id: id,
+        }
+        .publish(&env);
+        Ok(id)
     }
 
-    /// Client deposits funds, moving escrow to Funded → Active.
-    pub fn fund(env: Env, escrow_id: u64) {
-        let mut escrow: EscrowData = Self::load(&env, escrow_id);
+    /// Client deposits funds, moving escrow from Created to Active.
+    pub fn fund(env: Env, escrow_id: u64) -> Result<(), EscrowError> {
+        let mut escrow = Self::load(&env, escrow_id)?;
         escrow.client.require_auth();
 
-        assert!(escrow.status == EscrowStatus::Created, "invalid status");
+        if escrow.status != EscrowStatus::Created {
+            return Err(EscrowError::InvalidStatus);
+        }
 
-        // Transfer total from client to this contract
-        let client = escrow.client.clone();
-        let amount = escrow.total_amount;
+        // Effects before interaction.
+        escrow.status = EscrowStatus::Active;
+        Self::save(&env, escrow_id, &escrow);
+
+        // Interaction: move the full amount into this contract.
+        let contract = env.current_contract_address();
         token::Client::new(&env, &escrow.token).transfer(
-            &client,
-            &env.current_contract_address(),
-            &amount,
+            &escrow.client,
+            &contract,
+            &escrow.total_amount,
         );
 
-        escrow.status = EscrowStatus::Active;
-        env.storage().persistent().set(&DataKey::Escrow(escrow_id), &escrow);
+        Funded {
+            client: escrow.client.clone(),
+            escrow_id,
+            amount: escrow.total_amount,
+        }
+        .publish(&env);
+        Ok(())
     }
 
     /// Client approves release of a specific milestone to the freelancer.
-    pub fn release_milestone(env: Env, escrow_id: u64, milestone_index: u32) {
-        let mut escrow: EscrowData = Self::load(&env, escrow_id);
+    pub fn release_milestone(
+        env: Env,
+        escrow_id: u64,
+        milestone_index: u32,
+    ) -> Result<(), EscrowError> {
+        let mut escrow = Self::load(&env, escrow_id)?;
         escrow.client.require_auth();
 
-        assert!(escrow.status == EscrowStatus::Active, "invalid status");
+        if escrow.status != EscrowStatus::Active {
+            return Err(EscrowError::InvalidStatus);
+        }
+        if milestone_index >= escrow.milestones.len() {
+            return Err(EscrowError::MilestoneIndexOutOfBounds);
+        }
 
-        let idx = milestone_index as usize;
-        // TODO: bounds-check idx against escrow.milestones.len()
+        let mut milestone = escrow
+            .milestones
+            .get(milestone_index)
+            .ok_or(EscrowError::MilestoneIndexOutOfBounds)?;
+        if milestone.released {
+            return Err(EscrowError::MilestoneAlreadyReleased);
+        }
 
-        let mut milestone = escrow.milestones.get(milestone_index).unwrap();
-        assert!(!milestone.released, "already released");
-
-        // Effects before interaction
+        // Effects before interaction.
         milestone.released = true;
         escrow.milestones.set(milestone_index, milestone.clone());
 
-        // Check if all milestones released → mark Completed
         let all_done = escrow.milestones.iter().all(|m| m.released);
         if all_done {
             escrow.status = EscrowStatus::Completed;
         }
-        env.storage().persistent().set(&DataKey::Escrow(escrow_id), &escrow);
+        Self::save(&env, escrow_id, &escrow);
 
-        // Interaction: pay freelancer
+        // Interaction: pay freelancer.
+        let contract = env.current_contract_address();
         token::Client::new(&env, &escrow.token).transfer(
-            &env.current_contract_address(),
+            &contract,
             &escrow.freelancer,
             &milestone.amount,
         );
+
+        MilestoneReleased {
+            escrow_id,
+            index: milestone_index,
+            amount: milestone.amount,
+        }
+        .publish(&env);
+        Ok(())
     }
 
     /// Either party can open a dispute, freezing the escrow.
-    /// Dispute resolution is handled by the separate dispute contract.
-    pub fn open_dispute(env: Env, escrow_id: u64, initiator: Address) {
-        let mut escrow: EscrowData = Self::load(&env, escrow_id);
+    /// Resolution is handled by the dispute contract registered in `init`.
+    pub fn open_dispute(env: Env, escrow_id: u64, initiator: Address) -> Result<(), EscrowError> {
+        let mut escrow = Self::load(&env, escrow_id)?;
         initiator.require_auth();
 
-        assert!(escrow.status == EscrowStatus::Active, "invalid status");
-        assert!(
-            initiator == escrow.client || initiator == escrow.freelancer,
-            "unauthorized"
-        );
+        if escrow.status != EscrowStatus::Active {
+            return Err(EscrowError::InvalidStatus);
+        }
+        if initiator != escrow.client && initiator != escrow.freelancer {
+            return Err(EscrowError::Unauthorized);
+        }
 
         escrow.status = EscrowStatus::Disputed;
-        env.storage().persistent().set(&DataKey::Escrow(escrow_id), &escrow);
+        Self::save(&env, escrow_id, &escrow);
+
+        DisputeOpened {
+            escrow_id,
+            initiator,
+        }
+        .publish(&env);
+        Ok(())
     }
 
-    /// Called by the dispute contract to resolve and distribute remaining funds.
+    /// Called by the dispute contract to distribute the frozen funds.
     ///
-    /// # Arguments
-    /// - `client_share`     – amount returned to client
-    /// - `freelancer_share` – amount sent to freelancer
+    /// Both shares must be non-negative and sum exactly to the amount still held
+    /// in escrow (the sum of unreleased milestones); otherwise the call fails with
+    /// [`EscrowError::InvalidShares`]. This prevents both over-payment and funds
+    /// being stranded in the contract.
     pub fn resolve(
         env: Env,
         escrow_id: u64,
-        dispute_contract: Address,
         client_share: i128,
         freelancer_share: i128,
-    ) {
+    ) -> Result<(), EscrowError> {
+        // Only the registered dispute contract may resolve.
+        let dispute_contract: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::DisputeContract)
+            .ok_or(EscrowError::NotInitialized)?;
         dispute_contract.require_auth();
 
-        let mut escrow: EscrowData = Self::load(&env, escrow_id);
-        assert!(escrow.status == EscrowStatus::Disputed, "invalid status");
+        let mut escrow = Self::load(&env, escrow_id)?;
+        if escrow.status != EscrowStatus::Disputed {
+            return Err(EscrowError::InvalidStatus);
+        }
+        if client_share < 0 || freelancer_share < 0 {
+            return Err(EscrowError::InvalidShares);
+        }
 
+        let remaining = Self::remaining(&escrow)?;
+        let total_share = client_share
+            .checked_add(freelancer_share)
+            .ok_or(EscrowError::Overflow)?;
+        if total_share != remaining {
+            return Err(EscrowError::InvalidShares);
+        }
+
+        // Effects before interaction: mark every milestone released and complete.
+        for i in 0..escrow.milestones.len() {
+            let mut m = escrow.milestones.get(i).unwrap();
+            m.released = true;
+            escrow.milestones.set(i, m);
+        }
         escrow.status = EscrowStatus::Completed;
-        env.storage().persistent().set(&DataKey::Escrow(escrow_id), &escrow);
+        Self::save(&env, escrow_id, &escrow);
 
+        // Interaction: distribute.
         let token = token::Client::new(&env, &escrow.token);
-        let contract_addr = env.current_contract_address();
-
+        let contract = env.current_contract_address();
         if client_share > 0 {
-            token.transfer(&contract_addr, &escrow.client, &client_share);
+            token.transfer(&contract, &escrow.client, &client_share);
         }
         if freelancer_share > 0 {
-            token.transfer(&contract_addr, &escrow.freelancer, &freelancer_share);
+            token.transfer(&contract, &escrow.freelancer, &freelancer_share);
         }
+
+        Resolved {
+            escrow_id,
+            client_share,
+            freelancer_share,
+        }
+        .publish(&env);
+        Ok(())
     }
 
-    /// Refund client if escrow has passed its safety expiry with no completion.
-    pub fn reclaim_expired(env: Env, escrow_id: u64) {
-        let mut escrow: EscrowData = Self::load(&env, escrow_id);
+    /// Refund the client if the escrow has passed its safety expiry with no
+    /// completion. Only unreleased milestones are refunded.
+    pub fn reclaim_expired(env: Env, escrow_id: u64) -> Result<(), EscrowError> {
+        let mut escrow = Self::load(&env, escrow_id)?;
         escrow.client.require_auth();
 
-        assert!(
-            escrow.status == EscrowStatus::Active,
-            "invalid status"
-        );
-        assert!(
-            env.ledger().timestamp() > escrow.expiry,
-            "not expired"
-        );
+        if escrow.status != EscrowStatus::Active {
+            return Err(EscrowError::InvalidStatus);
+        }
+        if env.ledger().timestamp() <= escrow.expiry {
+            return Err(EscrowError::NotExpired);
+        }
 
-        // Calculate unreleased amount
-        let unreleased: i128 = escrow
-            .milestones
-            .iter()
-            .filter(|m| !m.released)
-            .map(|m| m.amount)
-            .sum();
+        let unreleased = Self::remaining(&escrow)?;
 
+        // Effects before interaction.
         escrow.status = EscrowStatus::Refunded;
-        env.storage().persistent().set(&DataKey::Escrow(escrow_id), &escrow);
+        Self::save(&env, escrow_id, &escrow);
 
-        token::Client::new(&env, &escrow.token).transfer(
-            &env.current_contract_address(),
-            &escrow.client,
-            &unreleased,
-        );
+        if unreleased > 0 {
+            let contract = env.current_contract_address();
+            token::Client::new(&env, &escrow.token).transfer(
+                &contract,
+                &escrow.client,
+                &unreleased,
+            );
+        }
+
+        Refunded {
+            escrow_id,
+            client: escrow.client.clone(),
+            amount: unreleased,
+        }
+        .publish(&env);
+        Ok(())
     }
 
     /// Read escrow state (view).
-    pub fn get(env: Env, escrow_id: u64) -> EscrowData {
+    pub fn get(env: Env, escrow_id: u64) -> Result<EscrowData, EscrowError> {
         Self::load(&env, escrow_id)
+    }
+
+    /// Read the configured dispute contract (view).
+    pub fn dispute_contract(env: Env) -> Result<Address, EscrowError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::DisputeContract)
+            .ok_or(EscrowError::NotInitialized)
     }
 
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    fn load(env: &Env, id: u64) -> EscrowData {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Escrow(id))
-            .expect("escrow not found")
+    /// Sum of milestones that have not been released yet (funds still held).
+    fn remaining(escrow: &EscrowData) -> Result<i128, EscrowError> {
+        let mut total: i128 = 0;
+        for m in escrow.milestones.iter() {
+            if !m.released {
+                total = total.checked_add(m.amount).ok_or(EscrowError::Overflow)?;
+            }
+        }
+        Ok(total)
     }
 
-    fn next_id(env: &Env) -> u64 {
+    fn load(env: &Env, id: u64) -> Result<EscrowData, EscrowError> {
+        let escrow: EscrowData = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(id))
+            .ok_or(EscrowError::NotFound)?;
+        // Keep live escrows from expiring when they are read.
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Escrow(id), TTL_THRESHOLD, TTL_EXTEND_TO);
+        Ok(escrow)
+    }
+
+    fn save(env: &Env, id: u64, escrow: &EscrowData) {
+        let key = DataKey::Escrow(id);
+        env.storage().persistent().set(&key, escrow);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        Self::extend_instance(env);
+    }
+
+    fn extend_instance(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+    }
+
+    fn next_id(env: &Env) -> Result<u64, EscrowError> {
         let id: u64 = env
             .storage()
             .instance()
             .get(&DataKey::Counter)
             .unwrap_or(0u64);
-        env.storage().instance().set(&DataKey::Counter, &(id + 1));
-        id
+        let next = id.checked_add(1).ok_or(EscrowError::Overflow)?;
+        env.storage().instance().set(&DataKey::Counter, &next);
+        Ok(id)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod test {
-    use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger};
-    use soroban_sdk::{vec, Env};
-
-    #[test]
-    fn test_create_and_fund() {
-        // TODO: register a mock token contract, call create() then fund(),
-        // assert status == Active and contract token balance == total_amount.
-        let _env = Env::default();
-    }
-
-    #[test]
-    fn test_release_milestone() {
-        // TODO: fund escrow, release milestone 0, assert freelancer balance.
-        let _env = Env::default();
-    }
-
-    #[test]
-    fn test_reclaim_expired() {
-        // TODO: fund escrow, advance ledger past expiry, call reclaim_expired,
-        // assert client balance restored.
-        let _env = Env::default();
-    }
-}
+mod test;

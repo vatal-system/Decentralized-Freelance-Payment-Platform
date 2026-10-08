@@ -8,6 +8,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+interface = { path = "../interface" }
 
 [dev-dependencies]
-soroban-sdk = { version = "21.0.0", features = ["testutils"] }
+soroban-sdk = { workspace = true, features = ["testutils"] }
+escrow = { path = "../escrow" }
+reputation = { path = "../reputation" }
