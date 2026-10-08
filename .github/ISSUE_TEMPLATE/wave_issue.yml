@@ -1,0 +1,60 @@
+name: Scoped task (Wave)
+description: A contributor-sized task with concrete acceptance criteria
+title: ""
+labels: ["wave"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep every task completable by one contributor within a week. If it is
+        larger, split it. Note when a change would need a security audit before
+        it could merge safely.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why this matters and any background a new contributor needs.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files to touch
+      placeholder: |
+        - contracts/escrow/src/lib.rs
+        - contracts/escrow/src/test.rs
+    validations:
+      required: true
+  - type: textarea
+    id: testing
+    attributes:
+      label: How to test
+      description: The commands or steps that prove the change works.
+    validations:
+      required: true
+  - type: dropdown
+    id: complexity
+    attributes:
+      label: Suggested complexity
+      options:
+        - Trivial
+        - Medium
+        - High
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety
+      options:
+        - label: This change can merge without a dedicated security audit
+          required: true

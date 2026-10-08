@@ -1,24 +1,19 @@
 # Contributing
 
-Thank you for your interest in contributing. This document explains how the project is structured, how to get your environment running, and the conventions to follow.
+Thanks for your interest in contributing. This document explains how the project
+is structured, how to get a working environment, and the conventions to follow.
 
 ---
 
-## Project Structure
+## What this project is
 
-```
-.
-├── contracts/               # Soroban smart contracts (Rust)
-│   ├── escrow/              # Core escrow + milestone logic
-│   ├── dispute/             # Dispute arbitration
-│   └── reputation/          # On-chain ratings
-├── frontend/                # React + TypeScript dapp
-│   └── src/
-│       ├── lib/stellar.ts   # Network config & SDK wrapper
-│       ├── hooks/           # Contract interaction hooks
-│       └── pages/           # Route-level components
-└── docs/                    # Architecture diagrams, ADRs
-```
+A decentralized freelance payment platform on Stellar. Clients fund a
+milestone-based escrow in a Stellar Asset Contract (USDC in production); the
+freelancer is paid as milestones are approved. Disputes are resolved by an
+arbitrator, and both parties rate each other on-chain afterwards.
+
+Three Soroban contracts (Rust → Wasm) plus a React frontend and an Express
+backend. **Everything is testnet-only — never use real funds.**
 
 ---
 
@@ -26,112 +21,238 @@ Thank you for your interest in contributing. This document explains how the proj
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Rust | stable | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| `wasm32-unknown-unknown` target | – | `rustup target add wasm32-unknown-unknown` |
-| Stellar CLI | latest | `cargo install --locked stellar-cli --features opt` |
+| Rust + Cargo | stable ≥ 1.91 | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| Stellar CLI | ≥ 25.2.0 (v28 current) | https://github.com/stellar/stellar-cli/releases |
 | Node.js | ≥ 20 | https://nodejs.org |
+| Docker + Compose | optional, for the one-command stack | https://docs.docker.com/get-docker |
+
+You do **not** need to add the wasm target by hand: `contracts/rust-toolchain.toml`
+declares `wasm32v1-none` plus the `rustfmt`/`clippy` components, and rustup
+installs them on first use.
+
+> **Why `wasm32v1-none` and not `wasm32-unknown-unknown`?** Soroban SDK v28+
+> refuses the old target and requires building with `stellar contract build`
+> (which sets a build-system flag the SDK checks). See `docs/TESTNET.md`.
 
 ---
 
-## Local Development
+## Quick start
 
-### Contracts
+### Option A — one command (Docker)
 
 ```bash
+docker compose up --build
+```
+
+- API: http://localhost:3000 (health at `/health`)
+- Frontend: http://localhost:5173
+
+This starts PostgreSQL, applies the committed Prisma migrations, boots the API,
+and serves the built frontend. To point the frontend at deployed contracts, pass
+the addresses (see `deployments/testnet.json`):
+
+```bash
+VITE_ESCROW_CONTRACT_ID=C... VITE_DISPUTE_CONTRACT_ID=C... \
+VITE_REPUTATION_CONTRACT_ID=C... VITE_USDC_CONTRACT_ID=C... \
+docker compose up --build
+```
+
+### Option B — manual
+
+```bash
+# Contracts
 cd contracts
-
-# Build all contracts
-stellar contract build
-
-# Run tests
 cargo test
+stellar contract build        # wasm lands in target/wasm32v1-none/release/
 
-# Deploy to testnet (requires funded testnet account)
-stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/escrow.wasm \
-  --network testnet \
-  --source <YOUR_SECRET_KEY>
+# Frontend
+cd ../frontend
+npm install
+cp .env.example .env          # fill in contract IDs (or run scripts/deploy_testnet.sh)
+npm run dev                   # http://localhost:5173
+
+# Backend (needs PostgreSQL)
+cd ../backend
+npm install
+cp .env.example .env          # DATABASE_URL, JWT_SECRET (≥32 chars), RPC URLs
+npx prisma migrate deploy
+npm run dev
 ```
 
-After deploying, copy the contract IDs into `frontend/.env` (see `frontend/.env.example`).
-
-### Frontend
+### Deploy to testnet
 
 ```bash
+rustup target add wasm32v1-none
+stellar keys generate deployer --network testnet --fund
+scripts/deploy_testnet.sh     # deploys + initializes all three contracts
+scripts/demo_testnet.sh       # create → fund → release → rate
+```
+
+---
+
+## Repository layout
+
+```
+contracts/
+  interface/     # shared types + cross-contract client (plain rlib, no exports)
+  escrow/        # funds, milestone state machine, expiry refunds
+  dispute/       # arbitration; calls back into escrow
+  reputation/    # immutable 1–5 star ratings
+frontend/        # React 18 + TypeScript + Vite
+backend/         # Express + Prisma + Zod
+scripts/         # testnet deploy + demo
+deployments/     # deployed contract IDs (testnet)
+docs/            # testnet notes; wave-issues/ holds the issue backlog
+```
+
+---
+
+## Architecture
+
+Three contracts interact. `escrow` holds the funds; `dispute` can only change
+them through a call that `escrow` has authorized; `reputation` reads escrow
+state to verify a job really completed.
+
+```
+        create / fund / release_milestone / reclaim_expired
+Client ───────────────────────────────────────────────► EscrowContract
+   ▲                                                         │  ▲
+   │ reward / refund                                         │  │ resolve(client_share,
+   │                                                         │  │         freelancer_share)
+   │                    open_dispute (either party)          │  │ (only the registered
+Freelancer ──────────────────────────────────────────────────┘  │  dispute contract may call)
+   ▲                                                              │
+   │                                    raise() ── verify ──────►│  (escrow must be Disputed;
+   │                                              ── cross-call ──┘   caller must be a party)
+DisputeContract ◄── arbitrate() ── Arbitrator
+   │
+   │  submit(rater, ratee, escrow_id, score) ── verify completed + participants
+   └──────────────────────────────────────────────► ReputationContract
+```
+
+State machine (escrow):
+
+```
+Created ──fund──► Active ──release all──► Completed
+                    │
+                    ├──open_dispute──► Disputed ──resolve──► Completed
+                    └──(past expiry)──► Refunded
+```
+
+### Contract reference
+
+| Contract | Function | Notes |
+|----------|----------|-------|
+| escrow | `init(admin, dispute_contract)` | one-time; admin can rotate the dispute contract |
+| escrow | `create(client, freelancer, token, milestones, expiry)` | validates amounts/expiry; returns id |
+| escrow | `fund(escrow_id)` | client deposits the total |
+| escrow | `release_milestone(escrow_id, index)` | client-only; completes the job on the last one |
+| escrow | `open_dispute(escrow_id, initiator)` | either party; freezes the escrow |
+| escrow | `resolve(escrow_id, client_share, freelancer_share)` | **dispute contract only**; shares must sum to the funds held |
+| escrow | `reclaim_expired(escrow_id)` | client refund after expiry |
+| escrow | `get(escrow_id)` / `dispute_contract()` | views |
+| dispute | `init(arbitrator)` | one-time; requires the arbitrator's auth |
+| dispute | `raise(escrow_id, escrow_contract, raised_by, reason)` | verifies escrow is Disputed and caller is a party |
+| dispute | `arbitrate(dispute_id, client_share, freelancer_share)` | arbitrator-only; cross-calls `escrow.resolve` |
+| dispute | `get` / `dispute_for` / `arbitrator` | views |
+| reputation | `init(admin, escrow_contract)` | one-time |
+| reputation | `submit(rater, ratee, escrow_id, score)` | verified against escrow; 1–5 |
+| reputation | `get_aggregate(address)` / `get_rating(rater, escrow_id)` | views |
+
+All fallible functions return a typed `Result<_, _Error>` (see the `interface`
+crate for `EscrowError`). **No `assert!`/`unwrap` in production paths.**
+
+All contracts extend storage TTL on read and write so live state never archives
+unexpectedly, and emit `#[contractevent]` events for the indexer.
+
+### Why an `interface` crate?
+
+`dispute` and `reputation` need to call/read `escrow`. Depending on the escrow
+*crate* directly makes the wasm linker fail (`symbol multiply defined`, because
+each contract crate exports ABI entry points). `interface` is a plain `rlib`
+holding shared types and a `#[contractclient]` trait, so contracts depend on it
+without exporting one another's symbols. Contract crates are pulled in only as
+**dev-dependencies** for tests.
+
+---
+
+## Testing
+
+```bash
+# Contracts: 48 tests — every state transition and failure path + 3 integration
+cd contracts
+cargo test
+cargo test -p escrow                    # one contract
+cargo test -p dispute --test full_flow  # cross-contract integration test
+
+# Frontend
 cd frontend
-npm install
-cp .env.example .env   # fill in contract IDs
-npm run dev            # starts at http://localhost:5173
+npm run lint
+npx tsc --noEmit
 ```
 
----
+Cross-contract tests live in `contracts/dispute/tests/full_flow.rs` and deploy
+real instances of all three contracts in the Soroban test environment. Every new
+contract function must ship with tests for both its success and failure paths.
 
-## Architecture Overview
+### Before opening a PR
 
-### Smart Contracts
-
-Three Soroban contracts work together:
-
-```
-Client ──fund()──► EscrowContract ──release_milestone()──► Freelancer
-                        │
-                   open_dispute()
-                        │
-                        ▼
-                  DisputeContract ──arbitrate()──► EscrowContract.resolve()
-                        
-ReputationContract  ◄──submit()── (either party, after completion)
+```bash
+cd contracts && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test
+cd ../frontend && npm run lint && npx tsc --noEmit && npm run build
 ```
 
-**EscrowContract** is the central contract. It holds funds and enforces the job state machine:
-
-```
-Created → Funded/Active → Completed
-                       ↘ Disputed → Resolved
-                       ↘ Expired  → Refunded
-```
-
-**DisputeContract** is called when either party raises a dispute. Phase 1 uses a single trusted arbitrator. Phase 2 will use a multi-sig panel.
-
-**ReputationContract** stores immutable post-job ratings (1–5 stars) keyed by `(rater, escrow_id)` to prevent duplicates.
-
-### Token
-
-All payments use USDC on Stellar (Circle's SAC-wrapped asset). This eliminates volatility risk for both parties. XLM is only used for network fees (~$0.00001 per transaction).
-
-### Frontend
-
-React + TypeScript SPA. Freighter browser wallet handles key management and transaction signing — no private keys ever touch the frontend code.
-
----
-
-## Good First Issues
-
-Search for `TODO` comments in the codebase. Each one is a scoped, self-contained task:
-
-- `contracts/escrow/src/lib.rs` — fill in the three test stubs
-- `contracts/dispute/src/lib.rs` — wire the cross-contract call to `escrow.resolve()`
-- `contracts/reputation/src/lib.rs` — add cross-contract escrow verification in `submit()`
-- `frontend/src/pages/PostJob.tsx` — build the dynamic milestone form fields
-- `frontend/src/pages/Dashboard.tsx` — implement Freighter wallet connection
-- `frontend/src/pages/JobDetail.tsx` — poll for escrow status updates
+That is exactly what CI runs.
 
 ---
 
 ## Conventions
 
-- **Checks-Effects-Interactions**: in every contract function, validate state first, update storage second, transfer tokens last.
-- **No panics in production paths**: use `Result` / `contracttype` errors instead of `assert!` in non-test code (the current `assert!` calls are placeholders).
-- **One PR per concern**: keep contract changes and frontend changes in separate PRs when possible.
-- **Test coverage**: every new contract function needs at least one passing test before merge.
+- **Checks-Effects-Interactions:** validate state, write storage, then transfer
+  tokens. Never transfer before recording the state change.
+- **Typed errors, not panics:** return `Result<_, ContractError>` from every
+  fallible function; reserve panics for authorization failures.
+- **TTL:** extend storage TTL whenever you read or write a persistent entry.
+- **Events:** emit a `#[contractevent]` for every state change so the indexer
+  can follow the chain.
+- **One PR per concern:** keep contract changes and frontend changes separate
+  where practical.
+- Keep contract interfaces small and explicit — add a new function rather than
+  overloading an existing one.
+
+### Branches and commits
+
+- Branch from `main`: `feat/short-description`, `fix/short-description`,
+  `docs/short-description`.
+- Small, focused commits with imperative messages
+  (`feat(escrow): reject zero-amount milestones`).
+- Open a PR against `main`; fill in the PR template and link the issue.
+- CI must be green before review.
 
 ---
 
-## Roadmap
+## How issues map to Wave complexity
 
-| Phase | Scope |
-|-------|-------|
-| 1 – MVP | Escrow + milestone release + single-arbitrator dispute + basic frontend |
-| 2 – Reputation | On-chain ratings, profile pages, reputation-gated job visibility |
-| 3 – Governance | Multi-sig dispute panel, community arbitrator election |
-| 4 – Discovery | Job board, search, skill tags, off-chain metadata via IPFS |
+Issues are labelled by the effort a single contributor needs (one week or less).
+When picking up an issue, keep the change inside that band — split anything
+larger into a new issue instead of growing the PR.
+
+| Level | Scope | Examples |
+|-------|-------|----------|
+| **Trivial** | Docs, test coverage for existing behaviour, input-validation messages, small UI polish, error handling. No interface changes. | Add a unit test for a failure path; improve a validation message |
+| **Medium** | One focused feature touching one or two files, with tests. May add a contract function. | Milestone editing before funding; partial release; event emission for indexing |
+| **High** | Cross-cutting change across contracts and/or backend, or a design decision that needs care. | Multi-arbitrator / timelocked disputes; supporting assets beyond USDC; backend event indexer |
+
+Anything that would need a security audit to merge safely should be raised as a
+design issue first rather than a ready-to-merge task.
+
+The scoped backlog lives in [`docs/wave-issues/`](./docs/wave-issues/).
+
+---
+
+## Security
+
+Read [`SECURITY.md`](./SECURITY.md) before reporting a vulnerability. The
+contracts are unaudited and testnet-only; do not deploy to mainnet or move real
+funds. Never commit secrets — Freighter signs in the browser, and `stellar-cli`
+keeps testnet keys outside the repo.
