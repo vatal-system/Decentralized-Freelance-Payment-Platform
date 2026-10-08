@@ -71,7 +71,8 @@ DisputeContract ◄── Arbitrator                                       │
   and the rater/ratee are the two participants.
 
 Full details, the contract reference table, and the shared `interface` crate
-rationale are in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+rationale are in [`CONTRIBUTING.md`](./CONTRIBUTING.md). The events each contract
+emits are catalogued in [`docs/EVENTS.md`](./docs/EVENTS.md).
 
 ## Stack
 
