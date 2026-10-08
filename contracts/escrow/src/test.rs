@@ -665,6 +665,76 @@ fn reclaim_from_disputed_is_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// reclaim_after_dispute_timeout
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reclaim_after_dispute_timeout_refunds_unreleased() {
+    let f = fixture();
+    let id = f.funded(&[400, 600]);
+    f.c().release_milestone(&id, &0); // 400 paid
+    f.c().open_dispute(&id, &f.client);
+
+    let deadline = f.c().dispute_deadline(&id);
+    assert_eq!(deadline, 1_000 + 7 * 24 * 60 * 60);
+
+    // Before the deadline the escape hatch is closed.
+    let res = f.c().try_reclaim_after_dispute_timeout(&id);
+    assert!(matches!(
+        res,
+        Err(Ok(EscrowError::DisputeTimeoutNotReached))
+    ));
+
+    f.env.ledger().set_timestamp(deadline + 1);
+    f.c().reclaim_after_dispute_timeout(&id);
+
+    assert_eq!(f.balance(&f.client), 9_000 + 600);
+    assert_eq!(f.balance(&f.freelancer), 400);
+    assert_eq!(f.balance(&f.escrow), 0);
+    assert_eq!(f.c().get(&id).status, EscrowStatus::Refunded);
+}
+
+#[test]
+fn reclaim_after_dispute_timeout_on_active_is_rejected() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    let res = f.c().try_reclaim_after_dispute_timeout(&id);
+    assert!(matches!(res, Err(Ok(EscrowError::InvalidStatus))));
+}
+
+#[test]
+fn late_ruling_after_timeout_reclaim_cannot_double_spend() {
+    let f = fixture();
+    let admin = Address::generate(&f.env);
+    let dispute = Address::generate(&f.env);
+    init_escrow(&f, &admin, &dispute);
+
+    let id = f.funded(&[1_000]);
+    f.c().open_dispute(&id, &f.client);
+    let deadline = f.c().dispute_deadline(&id);
+    f.env.ledger().set_timestamp(deadline + 1);
+    f.c().reclaim_after_dispute_timeout(&id);
+    assert_eq!(f.balance(&f.client), 10_000);
+
+    // A late ruling now hits a Refunded escrow and is rejected.
+    let res = f.c().try_resolve(&id, &1_000, &0);
+    assert!(matches!(res, Err(Ok(EscrowError::InvalidStatus))));
+    assert_eq!(f.balance(&f.escrow), 0, "no double spend");
+}
+
+#[test]
+#[should_panic]
+fn reclaim_after_dispute_timeout_requires_client_auth() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    f.c().open_dispute(&id, &f.client);
+    let deadline = f.c().dispute_deadline(&id);
+    f.env.ledger().set_timestamp(deadline + 1);
+    f.env.set_auths(&[]);
+    f.c().reclaim_after_dispute_timeout(&id);
+}
+
+// ---------------------------------------------------------------------------
 // initialization / views
 // ---------------------------------------------------------------------------
 

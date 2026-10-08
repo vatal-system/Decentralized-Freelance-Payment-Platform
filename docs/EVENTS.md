@@ -35,6 +35,7 @@ and, if desired, a second topic for the id/address in the `#[topic]` field.
 | Rust type | topic0 (`Symbol`) | topic1 (`#[topic]`) | data fields |
 |-----------|-------------------|---------------------|-------------|
 | `Raised` | `raised` | `escrow_id: u64` | `dispute_id: u64`, `raised_by: Address` |
+| `Approved` | `approved` | `dispute_id: u64` | `arbitrator: Address` |
 | `DisputeResolved` | `dispute_resolved` | `escrow_id: u64` | `dispute_id: u64`, `client_share: i128`, `freelancer_share: i128` |
 
 ## Reputation — `contracts/reputation`

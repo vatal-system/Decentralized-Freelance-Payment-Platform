@@ -4,16 +4,23 @@
 //!
 //! # Resolution Flow
 //!
-//!   escrow.open_dispute() → dispute.raise() → dispute.arbitrate() → escrow.resolve()
+//!   escrow.open_dispute() → dispute.raise() → dispute.approve()* → dispute.arbitrate()
+//!                                              → escrow.resolve()
 //!
 //! # Contributor Notes
-//! - Phase 1: single trusted arbitrator, set once via `init` (the arbitrator must
-//!   authorize `init`, so the role cannot be sniped by a front-runner).
+//! - A panel of arbitrators is set once via `init`; every member must authorize
+//!   `init`, so the role cannot be sniped by a front-runner. Resolutions need
+//!   `threshold`-of-`panel` approvals.
+//! - Each `approve` records an arbitrator's signature for a specific split
+//!   `(client_share, freelancer_share)`. `arbitrate` only proceeds once enough
+//!   panel members approved *that same split*, then cross-calls
+//!   `escrow.resolve()`.
 //! - `raise` cross-checks the escrow contract: the escrow must be in `Disputed`
 //!   state and the initiator must be a participant.
-//! - `arbitrate` cross-calls `escrow.resolve()`, which independently validates
-//!   that the shares sum to the funds still held.
-//! - See the `docs/wave-issues` backlog for multi-arbitrator / timelocked disputes.
+//! - `escrow.resolve()` independently validates that the shares sum to the funds
+//!   still held, so a bad proposal cannot over- or under-pay.
+//! - Escrow has a dispute timelock (`escrow.reclaim_after_dispute_timeout`) as an
+//!   escape hatch if the panel never rules; see `docs/DISPUTES.md`.
 //!
 //! This crate depends on the `escrow` crate for its generated client so the two
 //! contracts share one source of truth for the escrow types.
@@ -22,7 +29,7 @@
 
 use interface::{EscrowClient, EscrowData, EscrowStatus};
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, String,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, String, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -59,11 +66,24 @@ pub struct DisputeData {
     pub freelancer_share: i128,
 }
 
+/// A proposed split an arbitrator signs off on.
+#[contracttype]
+#[derive(Clone, PartialEq, Debug)]
+pub struct Proposal {
+    pub client_share: i128,
+    pub freelancer_share: i128,
+}
+
 #[contracttype]
 pub enum DataKey {
     Dispute(u64),
     Counter,
-    Arbitrator,
+    /// The arbitrator panel, set once in `init`.
+    Arbitrators,
+    /// How many panel approvals a proposal needs (M-of-N).
+    Threshold,
+    /// (dispute_id, arbitrator) → the split that arbitrator approved.
+    Approval(u64, Address),
     /// escrow_id → dispute_id, to prevent duplicate disputes per escrow.
     EscrowDispute(u64),
 }
@@ -79,6 +99,14 @@ pub struct Raised {
     pub escrow_id: u64,
     pub dispute_id: u64,
     pub raised_by: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Approved {
+    #[topic]
+    pub dispute_id: u64,
+    pub arbitrator: Address,
 }
 
 #[contractevent]
@@ -109,6 +137,9 @@ pub enum DisputeError {
     Unauthorized = 8,
     EscrowRejected = 9,
     Overflow = 10,
+    InvalidPanel = 11,
+    InvalidThreshold = 12,
+    InsufficientApprovals = 13,
 }
 
 // ---------------------------------------------------------------------------
@@ -120,18 +151,29 @@ pub struct DisputeContract;
 
 #[contractimpl]
 impl DisputeContract {
-    /// One-time initialisation: set the trusted arbitrator address.
+    /// One-time initialisation: set the arbitrator panel and approval threshold.
     ///
-    /// The arbitrator must sign, so a third party cannot take over the role by
-    /// calling `init` first on a freshly deployed contract.
-    pub fn init(env: Env, arbitrator: Address) -> Result<(), DisputeError> {
-        arbitrator.require_auth();
-        if env.storage().instance().has(&DataKey::Arbitrator) {
+    /// Every panel member must authorize, so a third party cannot take over the
+    /// role by calling `init` first on a freshly deployed contract.
+    pub fn init(env: Env, arbitrators: Vec<Address>, threshold: u32) -> Result<(), DisputeError> {
+        if env.storage().instance().has(&DataKey::Arbitrators) {
             return Err(DisputeError::AlreadyInitialized);
+        }
+        if arbitrators.is_empty() {
+            return Err(DisputeError::InvalidPanel);
+        }
+        if threshold == 0 || threshold > arbitrators.len() {
+            return Err(DisputeError::InvalidThreshold);
+        }
+        for arbitrator in arbitrators.iter() {
+            arbitrator.require_auth();
         }
         env.storage()
             .instance()
-            .set(&DataKey::Arbitrator, &arbitrator);
+            .set(&DataKey::Arbitrators, &arbitrators);
+        env.storage()
+            .instance()
+            .set(&DataKey::Threshold, &threshold);
         Self::extend_instance(&env);
         Ok(())
     }
@@ -208,7 +250,58 @@ impl DisputeContract {
         Ok(id)
     }
 
-    /// Arbitrator resolves the dispute and triggers fund distribution.
+    /// A panel member approves a specific split for a raised dispute.
+    ///
+    /// Approvals are per `(dispute_id, arbitrator)` and can be changed by calling
+    /// again, so an arbitrator can move their vote.
+    pub fn approve(
+        env: Env,
+        dispute_id: u64,
+        arbitrator: Address,
+        client_share: i128,
+        freelancer_share: i128,
+    ) -> Result<(), DisputeError> {
+        arbitrator.require_auth();
+
+        let panel: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Arbitrators)
+            .ok_or(DisputeError::NotInitialized)?;
+        if !panel.iter().any(|a| a == arbitrator) {
+            return Err(DisputeError::Unauthorized);
+        }
+        if client_share < 0 || freelancer_share < 0 {
+            return Err(DisputeError::EscrowRejected);
+        }
+
+        let dispute = Self::load(&env, dispute_id)?;
+        if dispute.status != DisputeStatus::Raised && dispute.status != DisputeStatus::UnderReview {
+            return Err(DisputeError::InvalidStatus);
+        }
+
+        let key = DataKey::Approval(dispute_id, arbitrator.clone());
+        env.storage().persistent().set(
+            &key,
+            &Proposal {
+                client_share,
+                freelancer_share,
+            },
+        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+
+        Approved {
+            dispute_id,
+            arbitrator,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Resolve the dispute once `threshold` panel members have approved the same
+    /// split, then trigger fund distribution via `escrow.resolve`.
     ///
     /// # Arguments
     /// - `client_share`     – portion returned to client (0 if a full freelancer win)
@@ -219,16 +312,35 @@ impl DisputeContract {
         client_share: i128,
         freelancer_share: i128,
     ) -> Result<(), DisputeError> {
-        let arbitrator: Address = env
+        let panel: Vec<Address> = env
             .storage()
             .instance()
-            .get(&DataKey::Arbitrator)
+            .get(&DataKey::Arbitrators)
             .ok_or(DisputeError::NotInitialized)?;
-        arbitrator.require_auth();
+        let threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Threshold)
+            .ok_or(DisputeError::NotInitialized)?;
 
         let mut dispute = Self::load(&env, dispute_id)?;
         if dispute.status != DisputeStatus::Raised && dispute.status != DisputeStatus::UnderReview {
             return Err(DisputeError::InvalidStatus);
+        }
+
+        // Count panel approvals that match the proposed split exactly.
+        let mut approvals: u32 = 0;
+        for arbitrator in panel.iter() {
+            let key = DataKey::Approval(dispute_id, arbitrator);
+            let approval: Option<Proposal> = env.storage().persistent().get(&key);
+            if let Some(p) = approval {
+                if p.client_share == client_share && p.freelancer_share == freelancer_share {
+                    approvals += 1;
+                }
+            }
+        }
+        if approvals < threshold {
+            return Err(DisputeError::InsufficientApprovals);
         }
 
         // Effects before interaction.
@@ -266,11 +378,19 @@ impl DisputeContract {
             .ok_or(DisputeError::NotFound)
     }
 
-    /// Read the configured arbitrator (view).
-    pub fn arbitrator(env: Env) -> Result<Address, DisputeError> {
+    /// Read the arbitrator panel (view).
+    pub fn arbitrators(env: Env) -> Result<Vec<Address>, DisputeError> {
         env.storage()
             .instance()
-            .get(&DataKey::Arbitrator)
+            .get(&DataKey::Arbitrators)
+            .ok_or(DisputeError::NotInitialized)
+    }
+
+    /// Read the approval threshold (view).
+    pub fn threshold(env: Env) -> Result<u32, DisputeError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Threshold)
             .ok_or(DisputeError::NotInitialized)
     }
 

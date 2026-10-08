@@ -35,6 +35,8 @@ const DAY_IN_LEDGERS: u32 = 17_280;
 const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
 /// Extend a storage entry out to this many ledgers from now.
 const TTL_EXTEND_TO: u32 = 90 * DAY_IN_LEDGERS;
+/// Seconds after a dispute is opened before the client can reclaim.
+const DISPUTE_TIMEOUT_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -46,6 +48,8 @@ pub enum DataKey {
     Counter,
     Admin,
     DisputeContract,
+    /// Timestamp after which a `Disputed` escrow may be reclaimed by the client.
+    DisputeDeadline(u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -435,9 +439,68 @@ impl EscrowContract {
         escrow.status = EscrowStatus::Disputed;
         Self::save(&env, escrow_id, &escrow);
 
+        // Timelock: if the panel never rules, the client can reclaim after this.
+        let deadline = env
+            .ledger()
+            .timestamp()
+            .checked_add(DISPUTE_TIMEOUT_SECONDS)
+            .ok_or(EscrowError::Overflow)?;
+        let deadline_key = DataKey::DisputeDeadline(escrow_id);
+        env.storage().persistent().set(&deadline_key, &deadline);
+        env.storage()
+            .persistent()
+            .extend_ttl(&deadline_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+
         DisputeOpened {
             escrow_id,
             initiator,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Refund the client from a `Disputed` escrow once the dispute timelock has
+    /// passed with no ruling. Only unreleased milestones are refunded.
+    ///
+    /// This is an escape hatch for an unavailable or malicious panel. Since it
+    /// moves the escrow to `Refunded`, a late `resolve` is rejected (status is no
+    /// longer `Disputed`), so funds cannot be paid out twice.
+    pub fn reclaim_after_dispute_timeout(env: Env, escrow_id: u64) -> Result<(), EscrowError> {
+        let mut escrow = Self::load(&env, escrow_id)?;
+        escrow.client.require_auth();
+
+        if escrow.status != EscrowStatus::Disputed {
+            return Err(EscrowError::InvalidStatus);
+        }
+
+        let deadline: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DisputeDeadline(escrow_id))
+            .ok_or(EscrowError::NotInitialized)?;
+        if env.ledger().timestamp() <= deadline {
+            return Err(EscrowError::DisputeTimeoutNotReached);
+        }
+
+        let unreleased = Self::remaining(&escrow)?;
+
+        // Effects before interaction.
+        escrow.status = EscrowStatus::Refunded;
+        Self::save(&env, escrow_id, &escrow);
+
+        if unreleased > 0 {
+            let contract = env.current_contract_address();
+            token::Client::new(&env, &escrow.token).transfer(
+                &contract,
+                &escrow.client,
+                &unreleased,
+            );
+        }
+
+        Refunded {
+            escrow_id,
+            client: escrow.client.clone(),
+            amount: unreleased,
         }
         .publish(&env);
         Ok(())
@@ -548,6 +611,14 @@ impl EscrowContract {
     /// Read escrow state (view).
     pub fn get(env: Env, escrow_id: u64) -> Result<EscrowData, EscrowError> {
         Self::load(&env, escrow_id)
+    }
+
+    /// Read the dispute timelock deadline for an escrow (view).
+    pub fn dispute_deadline(env: Env, escrow_id: u64) -> Result<u64, EscrowError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::DisputeDeadline(escrow_id))
+            .ok_or(EscrowError::NotFound)
     }
 
     /// Read the configured dispute contract (view).

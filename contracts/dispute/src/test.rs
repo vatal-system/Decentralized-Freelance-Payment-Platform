@@ -20,7 +20,8 @@ struct Fx {
     client: Address,
     freelancer: Address,
     token: Address,
-    arbitrator: Address,
+    arbitrators: Vec<Address>,
+    threshold: u32,
 }
 
 fn milestones(env: &Env, amounts: &[i128]) -> Vec<Milestone> {
@@ -37,23 +38,32 @@ fn milestones(env: &Env, amounts: &[i128]) -> Vec<Milestone> {
 }
 
 fn setup() -> Fx {
+    setup_panel(1, 1)
+}
+
+fn setup_panel(arbitrator_count: u32, threshold: u32) -> Fx {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
     let client = Address::generate(&env);
     let freelancer = Address::generate(&env);
-    let arbitrator = Address::generate(&env);
     let token = env
         .register_stellar_asset_contract_v2(Address::generate(&env))
         .address();
     StellarAssetClient::new(&env, &token).mint(&client, &10_000);
 
+    let mut arbitrators = Vec::new(&env);
+    for _ in 0..arbitrator_count {
+        arbitrators.push_back(Address::generate(&env));
+    }
+    let admin = arbitrators.get(0).unwrap();
+
     let escrow = env.register(EscrowContract, ());
     let dispute = env.register(DisputeContract, ());
 
-    EscrowContractClient::new(&env, &escrow).init(&arbitrator, &dispute);
-    DisputeContractClient::new(&env, &dispute).init(&arbitrator);
+    EscrowContractClient::new(&env, &escrow).init(&admin, &dispute);
+    DisputeContractClient::new(&env, &dispute).init(&arbitrators, &threshold);
 
     Fx {
         env,
@@ -62,7 +72,8 @@ fn setup() -> Fx {
         client,
         freelancer,
         token,
-        arbitrator,
+        arbitrators,
+        threshold,
     }
 }
 
@@ -72,6 +83,9 @@ impl Fx {
     }
     fn dispute_client(&self) -> DisputeContractClient<'_> {
         DisputeContractClient::new(&self.env, &self.dispute)
+    }
+    fn arbitrator(&self) -> Address {
+        self.arbitrators.get(0).unwrap()
     }
     fn balance(&self, addr: &Address) -> i128 {
         TokenClient::new(&self.env, &self.token).balance(addr)
@@ -108,7 +122,66 @@ impl Fx {
         ec.fund(&id);
         id
     }
+
+    /// Raise a dispute and return its id.
+    fn raised(&self) -> (u64, u64) {
+        let id = self.disputed();
+        let dispute_id =
+            self.dispute_client()
+                .raise(&id, &self.escrow, &self.client, &self.reason());
+        (id, dispute_id)
+    }
 }
+
+// ---------------------------------------------------------------------------
+// init
+// ---------------------------------------------------------------------------
+
+#[test]
+fn init_twice_is_rejected() {
+    let f = setup();
+    let res = f.dispute_client().try_init(&f.arbitrators, &f.threshold);
+    assert!(matches!(res, Err(Ok(DisputeError::AlreadyInitialized))));
+}
+
+#[test]
+fn init_rejects_empty_panel() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let dispute = env.register(DisputeContract, ());
+    let res = DisputeContractClient::new(&env, &dispute).try_init(&Vec::<Address>::new(&env), &1);
+    assert!(matches!(res, Err(Ok(DisputeError::InvalidPanel))));
+}
+
+#[test]
+fn init_rejects_bad_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let dispute = env.register(DisputeContract, ());
+    let advocate = Address::generate(&env);
+    let mut panel = Vec::new(&env);
+    panel.push_back(advocate);
+    // Threshold of 0 and more than the panel size are both invalid.
+    for threshold in [0u32, 2] {
+        let res = DisputeContractClient::new(&env, &dispute).try_init(&panel, &threshold);
+        assert!(matches!(res, Err(Ok(DisputeError::InvalidThreshold))));
+    }
+}
+
+#[test]
+#[should_panic]
+fn init_requires_arbitrator_auth() {
+    // A stranger must not be able to claim a seat on the panel.
+    let env = Env::default();
+    let dispute = env.register(DisputeContract, ());
+    let mut panel = Vec::new(&env);
+    panel.push_back(Address::generate(&env));
+    DisputeContractClient::new(&env, &dispute).init(&panel, &1);
+}
+
+// ---------------------------------------------------------------------------
+// raise
+// ---------------------------------------------------------------------------
 
 #[test]
 fn raise_requires_a_disputed_escrow() {
@@ -155,10 +228,7 @@ fn raise_unknown_escrow_is_rejected() {
 #[test]
 fn raise_records_expected_state() {
     let f = setup();
-    let id = f.disputed();
-    let dispute_id = f
-        .dispute_client()
-        .raise(&id, &f.escrow, &f.client, &f.reason());
+    let (id, dispute_id) = f.raised();
 
     let d = f.dispute_client().get(&dispute_id);
     assert_eq!(d.status, DisputeStatus::Raised);
@@ -167,14 +237,56 @@ fn raise_records_expected_state() {
     assert_eq!(f.dispute_client().dispute_for(&id), dispute_id);
 }
 
-#[test]
-fn arbitrate_distributes_funds_via_escrow() {
-    let f = setup();
-    let id = f.disputed();
-    let dispute_id = f
-        .dispute_client()
-        .raise(&id, &f.escrow, &f.client, &f.reason());
+// ---------------------------------------------------------------------------
+// approve / arbitrate
+// ---------------------------------------------------------------------------
 
+#[test]
+fn approve_by_non_panelist_is_rejected() {
+    let f = setup();
+    let (_, dispute_id) = f.raised();
+    let stranger = Address::generate(&f.env);
+    let res = f
+        .dispute_client()
+        .try_approve(&dispute_id, &stranger, &400, &600);
+    assert!(matches!(res, Err(Ok(DisputeError::Unauthorized))));
+}
+
+#[test]
+#[should_panic]
+fn approve_requires_arbitrator_auth() {
+    // Set up a raised dispute while auths are mocked, then disable mocking so
+    // the missing panel authorization must panic.
+    let f = setup();
+    let (_, dispute_id) = f.raised();
+    let arbitrator = f.arbitrator();
+    f.env.set_auths(&[]);
+    f.dispute_client()
+        .approve(&dispute_id, &arbitrator, &400, &600);
+}
+
+#[test]
+fn arbitrate_without_approvals_is_rejected() {
+    let f = setup();
+    let (_, dispute_id) = f.raised();
+    let res = f.dispute_client().try_arbitrate(&dispute_id, &400, &600);
+    assert!(matches!(res, Err(Ok(DisputeError::InsufficientApprovals))));
+}
+
+#[test]
+fn arbitrate_reaching_threshold_distributes_funds_via_escrow() {
+    let f = setup_panel(3, 2);
+    let (id, dispute_id) = f.raised();
+
+    // One approval is not enough...
+    f.dispute_client()
+        .approve(&dispute_id, &f.arbitrators.get(0).unwrap(), &400, &600);
+    let res = f.dispute_client().try_arbitrate(&dispute_id, &400, &600);
+    assert!(matches!(res, Err(Ok(DisputeError::InsufficientApprovals))));
+
+    // ...a second matching approval reaches the 2-of-3 threshold.
+    f.dispute_client()
+        .approve(&dispute_id, &f.arbitrators.get(1).unwrap(), &400, &600);
     f.dispute_client().arbitrate(&dispute_id, &400, &600);
 
     assert_eq!(
@@ -184,17 +296,34 @@ fn arbitrate_distributes_funds_via_escrow() {
     assert_eq!(f.balance(&f.client), 9_000 + 400);
     assert_eq!(f.balance(&f.freelancer), 600);
     assert_eq!(f.balance(&f.escrow), 0);
+    assert_eq!(
+        f.escrow_client().get(&id).status,
+        escrow::EscrowStatus::Completed
+    );
+}
+
+#[test]
+fn arbitrate_ignores_approvals_for_a_different_split() {
+    let f = setup_panel(3, 2);
+    let (_, dispute_id) = f.raised();
+    f.dispute_client()
+        .approve(&dispute_id, &f.arbitrators.get(0).unwrap(), &1_000, &0);
+    f.dispute_client()
+        .approve(&dispute_id, &f.arbitrators.get(1).unwrap(), &0, &1_000);
+
+    // Each arbitrator approved a *different* split, so nobody has approved
+    // (400, 600).
+    let res = f.dispute_client().try_arbitrate(&dispute_id, &400, &600);
+    assert!(matches!(res, Err(Ok(DisputeError::InsufficientApprovals))));
 }
 
 #[test]
 fn arbitrate_with_invalid_shares_is_rejected_by_escrow() {
     let f = setup();
-    let id = f.disputed();
-    let dispute_id = f
-        .dispute_client()
-        .raise(&id, &f.escrow, &f.client, &f.reason());
-
-    // 400 + 400 != 1000 held in escrow.
+    let (_, dispute_id) = f.raised();
+    // 400 + 400 != 1000 held in escrow; the panel approves, escrow rejects.
+    f.dispute_client()
+        .approve(&dispute_id, &f.arbitrator(), &400, &400);
     let res = f.dispute_client().try_arbitrate(&dispute_id, &400, &400);
     assert!(matches!(res, Err(Ok(DisputeError::EscrowRejected))));
     // Nothing moved.
@@ -204,43 +333,21 @@ fn arbitrate_with_invalid_shares_is_rejected_by_escrow() {
 #[test]
 fn arbitrate_twice_is_rejected() {
     let f = setup();
-    let id = f.disputed();
-    let dispute_id = f
-        .dispute_client()
-        .raise(&id, &f.escrow, &f.client, &f.reason());
-
+    let (_, dispute_id) = f.raised();
+    f.dispute_client()
+        .approve(&dispute_id, &f.arbitrator(), &1_000, &0);
     f.dispute_client().arbitrate(&dispute_id, &1_000, &0);
     let res = f.dispute_client().try_arbitrate(&dispute_id, &1_000, &0);
     assert!(matches!(res, Err(Ok(DisputeError::InvalidStatus))));
 }
 
-#[test]
-fn init_twice_is_rejected() {
-    let f = setup();
-    let res = f.dispute_client().try_init(&f.arbitrator);
-    assert!(matches!(res, Err(Ok(DisputeError::AlreadyInitialized))));
-}
+// ---------------------------------------------------------------------------
+// views
+// ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic]
-fn init_requires_arbitrator_auth() {
-    // A stranger must not be able to claim the arbitrator role.
-    let env = Env::default();
-    let dispute = env.register(DisputeContract, ());
-    let stranger = Address::generate(&env);
-    DisputeContractClient::new(&env, &dispute).init(&stranger);
-}
-
-#[test]
-#[should_panic]
-fn arbitrate_requires_arbitrator_auth() {
-    // Set up a raised dispute while auths are mocked, then disable mocking so
-    // the missing arbitrator authorization must panic.
-    let f = setup();
-    let id = f.disputed();
-    let dispute_id = f
-        .dispute_client()
-        .raise(&id, &f.escrow, &f.client, &f.reason());
-    f.env.set_auths(&[]);
-    f.dispute_client().arbitrate(&dispute_id, &400, &600);
+fn panel_and_threshold_are_readable() {
+    let f = setup_panel(3, 2);
+    assert_eq!(f.dispute_client().threshold(), 2);
+    assert_eq!(f.dispute_client().arbitrators(), f.arbitrators);
 }

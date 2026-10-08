@@ -124,7 +124,8 @@ Freelancer ───────────────────────
    ▲                                                              │
    │                                    raise() ── verify ──────►│  (escrow must be Disputed;
    │                                              ── cross-call ──┘   caller must be a party)
-DisputeContract ◄── arbitrate() ── Arbitrator
+DisputeContract ◄── approve()* ── Arbitrator panel
+   │                  arbitrate() (needs M-of-N approvals)
    │
    │  submit(rater, ratee, escrow_id, score) ── verify completed + participants
    └──────────────────────────────────────────────► ReputationContract
@@ -136,8 +137,12 @@ State machine (escrow):
 Created ──fund──► Active ──release all──► Completed
                     │
                     ├──open_dispute──► Disputed ──resolve──► Completed
+                    │                     └──(past dispute deadline)──► Refunded
                     └──(past expiry)──► Refunded
 ```
+
+Details of the dispute panel and timelock are in
+[`docs/DISPUTES.md`](./docs/DISPUTES.md).
 
 ### Contract reference
 
@@ -147,14 +152,16 @@ Created ──fund──► Active ──release all──► Completed
 | escrow | `create(client, freelancer, token, milestones, expiry)` | validates amounts/expiry; returns id |
 | escrow | `fund(escrow_id)` | client deposits the total |
 | escrow | `release_milestone(escrow_id, index)` | client-only; completes the job on the last one |
-| escrow | `open_dispute(escrow_id, initiator)` | either party; freezes the escrow |
+| escrow | `open_dispute(escrow_id, initiator)` | either party; freezes the escrow and starts the dispute timelock |
 | escrow | `resolve(escrow_id, client_share, freelancer_share)` | **dispute contract only**; shares must sum to the funds held |
 | escrow | `reclaim_expired(escrow_id)` | client refund after expiry |
-| escrow | `get(escrow_id)` / `dispute_contract()` | views |
-| dispute | `init(arbitrator)` | one-time; requires the arbitrator's auth |
+| escrow | `reclaim_after_dispute_timeout(escrow_id)` | client refund from `Disputed` once the dispute deadline passes |
+| escrow | `get(escrow_id)` / `dispute_contract()` / `dispute_deadline(escrow_id)` | views |
+| dispute | `init(arbitrators, threshold)` | one-time; every panel member authorizes |
 | dispute | `raise(escrow_id, escrow_contract, raised_by, reason)` | verifies escrow is Disputed and caller is a party |
-| dispute | `arbitrate(dispute_id, client_share, freelancer_share)` | arbitrator-only; cross-calls `escrow.resolve` |
-| dispute | `get` / `dispute_for` / `arbitrator` | views |
+| dispute | `approve(dispute_id, arbitrator, client_share, freelancer_share)` | panel-only; records an approval of a specific split |
+| dispute | `arbitrate(dispute_id, client_share, freelancer_share)` | needs `threshold` matching approvals; cross-calls `escrow.resolve` |
+| dispute | `get` / `dispute_for` / `arbitrators` / `threshold` | views |
 | reputation | `init(admin, escrow_contract)` | one-time |
 | reputation | `submit(rater, ratee, escrow_id, score)` | verified against escrow; 1–5 |
 | reputation | `get_aggregate(address)` / `get_rating(rater, escrow_id)` | views |
@@ -179,7 +186,7 @@ without exporting one another's symbols. Contract crates are pulled in only as
 ## Testing
 
 ```bash
-# Contracts: 48 tests — every state transition and failure path + 3 integration
+# Contracts: 80 tests — every state transition and failure path + 3 integration
 cd contracts
 cargo test
 cargo test -p escrow                    # one contract

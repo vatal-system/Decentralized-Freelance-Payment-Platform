@@ -31,11 +31,12 @@ const CONTRACT_ERROR_MESSAGES: Record<number, string> = {
   8: "The milestone list is invalid, or you're not a party to this job.",
   9: "The expiry time is invalid, or the rated address is incorrect.",
   10: "The client and freelancer must be different addresses.",
-  11: "This contract is already initialized.",
-  12: "This contract isn't initialized yet.",
-  13: "The payout shares don't match the funds still held in escrow.",
+  11: "This contract is already initialized, or the address isn't on the arbitrator panel.",
+  12: "This contract isn't initialized yet, or the approval threshold is invalid.",
+  13: "The shares don't match the funds held, or the panel hasn't approved enough votes.",
   14: "A numeric overflow occurred.",
   15: "That amount is more than what's left on the milestone.",
+  16: "The dispute timeout hasn't been reached yet.",
 };
 
 /** Extract the `#N` discriminant from a Soroban contract error, if present. */
