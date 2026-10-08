@@ -14,6 +14,13 @@ const schema = z.object({
   USDC_CONTRACT_ID: z.string().default(""),
   XLM_CONTRACT_ID: z.string().default(""),
   INDEXER_POLL_INTERVAL_MS: z.coerce.number().default(5000),
+  // Comma-separated Stellar addresses that may resolve disputes through the
+  // API. Empty means "nobody", not "everybody": the route fails closed.
+  ARBITRATOR_ADDRESSES: z.string().default(""),
+  // Comma-separated browser origins allowed to call the API (e.g. the Vercel
+  // frontend). Empty means "no restriction" in development, but production
+  // warns loudly because that allows every origin.
+  CORS_ORIGIN: z.string().default(""),
 });
 
 const parsed = schema.safeParse(process.env);

@@ -3,7 +3,13 @@
  *
  * POST /api/disputes              — raise a dispute (builds open_dispute tx)
  * GET  /api/disputes/:id          — get dispute details
- * POST /api/disputes/:id/resolve  — arbitrator resolves (admin only, builds arbitrate tx)
+ * POST /api/disputes/:id/resolve  — arbitrator resolves (builds arbitrate tx)
+ *
+ * Authorization: `/:id/resolve` may only be called by an address listed in
+ * `ARBITRATOR_ADDRESSES`. The on-chain dispute contract is still the final
+ * authority (it checks panel membership inside `arbitrate`), but the route also
+ * writes DB state before the transaction is confirmed, so it must not be
+ * reachable by a non-arbitrator.
  */
 
 import { Router } from "express";
@@ -19,6 +25,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { config } from "../config";
 import { prisma } from "../db";
+import { isListed, parseList } from "../lib/access";
 import { requireAuth } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import { AppError } from "../middleware/errorHandler";
@@ -98,7 +105,7 @@ disputesRouter.get("/:id", async (req, res, next) => {
   }
 });
 
-// POST /api/disputes/:id/resolve  (arbitrator only — TODO: add admin role check)
+// POST /api/disputes/:id/resolve  (arbitrator only)
 const resolveSchema = z.object({
   clientShare: z.number().min(0),
   freelancerShare: z.number().min(0),
@@ -107,6 +114,18 @@ const resolveSchema = z.object({
 disputesRouter.post("/:id/resolve", requireAuth, validate(resolveSchema), async (req, res, next) => {
   try {
     const { clientShare, freelancerShare } = req.body as z.infer<typeof resolveSchema>;
+
+    // Fail closed: an unconfigured allowlist grants nobody access.
+    const arbitrators = parseList(config.ARBITRATOR_ADDRESSES);
+    if (arbitrators.length === 0) {
+      throw new AppError(
+        503,
+        "Dispute resolution is unavailable: no ARBITRATOR_ADDRESSES configured",
+      );
+    }
+    if (!isListed(res.locals.stellarAddress, arbitrators)) {
+      throw new AppError(403, "Only a configured arbitrator can resolve a dispute");
+    }
 
     const dispute = await prisma.dispute.findUnique({
       where: { id: req.params.id },
