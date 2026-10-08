@@ -28,6 +28,7 @@ import {
   server,
   type MilestoneInput,
 } from "../lib/stellar";
+import { friendlyError } from "../lib/errors";
 import { useWallet } from "./wallet-context";
 
 export interface MilestoneView {
@@ -52,10 +53,6 @@ export interface ReputationView {
   count: bigint;
 }
 
-function toMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 export function useEscrow() {
   const { publicKey, connect, sign } = useWallet();
   const [loading, setLoading] = useState(false);
@@ -70,7 +67,7 @@ export function useEscrow() {
         if (!pk) throw new Error("Wallet not connected");
         return await fn(pk);
       } catch (e) {
-        setError(toMessage(e));
+        setError(friendlyError(e));
         return undefined;
       } finally {
         setLoading(false);
