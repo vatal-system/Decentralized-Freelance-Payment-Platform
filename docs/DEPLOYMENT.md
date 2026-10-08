@@ -108,7 +108,7 @@ backend's `CORS_ORIGIN` to `https://stellar-freelance-frontend.vercel.app`.
 - **The free plan spins down when idle.** The indexer is in-process, so it pauses
   with the service. It resumes from the persisted `IndexerCursor` and catches up,
   but events raised while it was asleep are applied late rather than immediately.
-- **`autoDeploy` is off** so a `git push` does not ship to production without a
+- **`autoDeployTrigger` is `off`** so a `git push` does not ship to production without a
   green CI run. Deploy from the dashboard, or `render deploys create <service>`.
 - **First request after a spin-down is slow** — Render has to boot the container
   and apply migrations before `/health` answers.

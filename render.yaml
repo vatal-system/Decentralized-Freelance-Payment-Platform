@@ -34,9 +34,12 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     healthCheckPath: /health
-    # Deploys are deliberate: `git push` should not roll production forward
-    # without a green CI run.
-    autoDeploy: false
+    # Deploys are deliberate: `git push` should not roll production forward on
+    # its own. Switch to `checksPass` to deploy automatically once this repo's
+    # CI checks pass for the commit (`autoDeployTrigger` replaces the deprecated
+    # `autoDeploy` field).
+    # Quoted: YAML reads a bare `off` as boolean false, and this field is a string.
+    autoDeployTrigger: "off"
     envVars:
       - key: NODE_ENV
         value: production
