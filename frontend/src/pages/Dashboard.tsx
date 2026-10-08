@@ -9,6 +9,7 @@
 
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import Layout from "../components/Layout";
 import { useWallet } from "../hooks/wallet-context";
 
 export default function Dashboard() {
@@ -17,7 +18,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   return (
-    <main style={{ padding: "1rem", maxWidth: 720 }}>
+    <Layout>
       <h1>My Jobs</h1>
 
       {!publicKey ? (
@@ -34,7 +35,11 @@ export default function Dashboard() {
         </p>
       )}
 
-      {error && <p role="alert" style={{ color: "crimson" }}>{error}</p>}
+      {error && (
+        <p role="alert" className="alert alert-error">
+          {error}
+        </p>
+      )}
 
       <form
         onSubmit={(e) => {
@@ -56,6 +61,6 @@ export default function Dashboard() {
       <p>
         <Link to="/post">Post a new job →</Link>
       </p>
-    </main>
+    </Layout>
   );
 }

@@ -8,6 +8,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
+import Layout from "../components/Layout";
+import StatusBadge from "../components/StatusBadge";
 import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { fromStroops } from "../lib/stellar";
@@ -36,7 +38,13 @@ export default function JobDetail() {
     return () => clearInterval(timer);
   }, [refresh]);
 
-  if (escrowId === null) return <main style={{ padding: "1rem" }}><p>Invalid job id.</p></main>;
+  if (escrowId === null) {
+    return (
+      <Layout>
+        <p>Invalid job id.</p>
+      </Layout>
+    );
+  }
 
   const isClient = publicKey !== null && escrow?.client === publicKey;
   const isFreelancer = publicKey !== null && escrow?.freelancer === publicKey;
@@ -44,7 +52,7 @@ export default function JobDetail() {
   const isActive = escrow?.status === "Active";
 
   return (
-    <main style={{ padding: "1rem", maxWidth: 720 }}>
+    <Layout>
       <h1>Job #{id}</h1>
 
       {!publicKey && (
@@ -55,14 +63,15 @@ export default function JobDetail() {
       )}
 
       {(error || loadError) && (
-        <p role="alert" style={{ color: "crimson" }}>{error ?? loadError}</p>
+        <p role="alert" className="alert alert-error">
+          {error ?? loadError}
+        </p>
       )}
 
       {escrow && (
         <>
           <p>
-            Status:{" "}
-            <strong style={{ color: isActive ? "green" : "#555" }}>{escrow.status}</strong>
+            Status: <StatusBadge status={escrow.status} />
           </p>
           <p>
             Client: <code>{escrow.client}</code>
@@ -77,7 +86,7 @@ export default function JobDetail() {
           <h2>Milestones</h2>
           <ol>
             {escrow.milestones.map((m, i) => (
-              <li key={i} style={{ marginBottom: "0.5rem" }}>
+              <li key={i}>
                 {fromStroops(m.amount)} — {m.released ? "released" : "pending"}{" "}
                 {isClient && isActive && !m.released && (
                   <button
@@ -100,10 +109,10 @@ export default function JobDetail() {
             </button>
           )}
           {escrow.status === "Disputed" && (
-            <p>This escrow is frozen pending arbitration.</p>
+            <p className="muted">This escrow is frozen pending arbitration.</p>
           )}
         </>
       )}
-    </main>
+    </Layout>
   );
 }

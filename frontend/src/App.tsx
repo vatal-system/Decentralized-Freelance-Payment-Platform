@@ -21,18 +21,10 @@ import Profile from "./pages/Profile";
 function Nav() {
   const { publicKey, connecting, connect, disconnect } = useWallet();
   return (
-    <nav
-      style={{
-        display: "flex",
-        gap: "1rem",
-        alignItems: "center",
-        padding: "0.75rem 1rem",
-        borderBottom: "1px solid #ddd",
-      }}
-    >
+    <nav className="nav">
       <Link to="/">My Jobs</Link>
       <Link to="/post">Post a Job</Link>
-      <span style={{ marginLeft: "auto" }}>
+      <span className="nav-spacer">
         {publicKey ? (
           <>
             <code title={publicKey}>

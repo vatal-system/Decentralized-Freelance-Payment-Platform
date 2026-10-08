@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
+import Layout from "../components/Layout";
 import { useEscrow, type ReputationView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 
@@ -26,7 +27,7 @@ export default function Profile() {
       : null;
 
   return (
-    <main style={{ padding: "1rem", maxWidth: 720 }}>
+    <Layout>
       <h1>Profile</h1>
       <p>
         Address: <code>{address}</code>
@@ -40,7 +41,11 @@ export default function Profile() {
       )}
 
       {loading && <p>Loading…</p>}
-      {error && <p role="alert" style={{ color: "crimson" }}>{error}</p>}
+      {error && (
+        <p role="alert" className="alert alert-error">
+          {error}
+        </p>
+      )}
 
       {reputation && (
         <p>
@@ -54,6 +59,6 @@ export default function Profile() {
           )}
         </p>
       )}
-    </main>
+    </Layout>
   );
 }

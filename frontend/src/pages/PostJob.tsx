@@ -13,6 +13,7 @@
 
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import Layout from "../components/Layout";
 import { useEscrow } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { CONTRACT_ADDRESSES, toStroops } from "../lib/stellar";
@@ -53,17 +54,17 @@ export default function PostJob() {
   }
 
   return (
-    <main style={{ padding: "1rem", maxWidth: 720 }}>
+    <Layout>
       <h1>Post a Job</h1>
 
       {!CONTRACT_ADDRESSES.escrow && (
-        <p role="alert" style={{ color: "crimson" }}>
+        <p role="alert" className="alert alert-error">
           No escrow contract configured. Run <code>scripts/deploy_testnet.sh</code> or
           set <code>VITE_ESCROW_CONTRACT_ID</code> in <code>.env</code>.
         </p>
       )}
       {!CONTRACT_ADDRESSES.usdc && (
-        <p role="alert" style={{ color: "crimson" }}>
+        <p role="alert" className="alert alert-error">
           No token configured. Set <code>VITE_USDC_CONTRACT_ID</code> in{" "}
           <code>.env</code>.
         </p>
@@ -126,12 +127,16 @@ export default function PostJob() {
           </label>
         </p>
 
-        <button type="submit" disabled={loading || connecting}>
+        <button type="submit" className="btn-primary" disabled={loading || connecting}>
           {loading ? "Submitting…" : publicKey ? "Create & Fund Escrow" : "Connect & Continue"}
         </button>
       </form>
 
-      {error && <p role="alert" style={{ color: "crimson" }}>{error}</p>}
-    </main>
+      {error && (
+        <p role="alert" className="alert alert-error">
+          {error}
+        </p>
+      )}
+    </Layout>
   );
 }
