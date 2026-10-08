@@ -178,3 +178,29 @@ fn aggregate_for_unknown_address_is_empty() {
     assert_eq!(agg.count, 0);
     assert_eq!(agg.total_score, 0);
 }
+
+// ---------------------------------------------------------------------------
+// authorization
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic]
+fn init_requires_admin_auth() {
+    // Fresh env with no mocked auths: `admin.require_auth()` must panic.
+    let env = Env::default();
+    let reputation = env.register(ReputationContract, ());
+    let admin = Address::generate(&env);
+    let escrow = Address::generate(&env);
+    ReputationContractClient::new(&env, &reputation).init(&admin, &escrow);
+}
+
+#[test]
+#[should_panic]
+fn submit_requires_rater_auth() {
+    // Complete a job while auths are mocked, then disable mocking so the
+    // missing rater authorization must panic.
+    let f = setup();
+    let id = f.completed();
+    f.env.set_auths(&[]);
+    f.rep_client().submit(&f.client, &f.freelancer, &id, &5);
+}

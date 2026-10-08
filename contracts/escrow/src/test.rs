@@ -478,3 +478,59 @@ fn create_requires_client_auth() {
         &10_000,
     );
 }
+
+#[test]
+#[should_panic]
+fn init_requires_admin_auth() {
+    // Fresh env with no mocked auths: `admin.require_auth()` must panic.
+    let env = Env::default();
+    let escrow = env.register(EscrowContract, ());
+    let admin = Address::generate(&env);
+    let dispute = Address::generate(&env);
+    EscrowContractClient::new(&env, &escrow).init(&admin, &dispute);
+}
+
+#[test]
+#[should_panic]
+fn fund_requires_client_auth() {
+    // Set up the escrow while auths are mocked, then disable mocking for the
+    // call under test so the missing client authorization must panic.
+    let f = fixture();
+    let id = f.c().create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones(&f.env, &[1_000]),
+        &10_000,
+    );
+    f.env.set_auths(&[]);
+    f.c().fund(&id);
+}
+
+#[test]
+#[should_panic]
+fn release_milestone_requires_client_auth() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    f.env.set_auths(&[]);
+    f.c().release_milestone(&id, &0);
+}
+
+#[test]
+#[should_panic]
+fn open_dispute_requires_initiator_auth() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    f.env.set_auths(&[]);
+    f.c().open_dispute(&id, &f.client);
+}
+
+#[test]
+#[should_panic]
+fn reclaim_expired_requires_client_auth() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    f.env.ledger().set_timestamp(10_001); // past expiry
+    f.env.set_auths(&[]);
+    f.c().reclaim_expired(&id);
+}

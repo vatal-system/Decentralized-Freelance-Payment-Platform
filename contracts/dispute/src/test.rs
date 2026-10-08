@@ -229,3 +229,17 @@ fn init_requires_arbitrator_auth() {
     let stranger = Address::generate(&env);
     DisputeContractClient::new(&env, &dispute).init(&stranger);
 }
+
+#[test]
+#[should_panic]
+fn arbitrate_requires_arbitrator_auth() {
+    // Set up a raised dispute while auths are mocked, then disable mocking so
+    // the missing arbitrator authorization must panic.
+    let f = setup();
+    let id = f.disputed();
+    let dispute_id = f
+        .dispute_client()
+        .raise(&id, &f.escrow, &f.client, &f.reason());
+    f.env.set_auths(&[]);
+    f.dispute_client().arbitrate(&dispute_id, &400, &600);
+}
