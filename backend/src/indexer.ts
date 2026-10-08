@@ -7,6 +7,10 @@
  * This keeps the DB in sync without requiring the frontend to call /sync
  * endpoints manually after every transaction.
  *
+ * The first poll does not start at ledger 1 — the RPC only retains a rolling
+ * window of history, so a fresh cursor starts just behind the chain tip (see
+ * `resolveStartLedger`).
+ *
  * Events handled (see docs/EVENTS.md):
  *   escrow     — created, funded, milestones_updated, milestone_released,
  *                dispute_opened, resolved, refunded
@@ -40,6 +44,21 @@ const EVENT_PAGE_LIMIT = 100;
 /** Longest error message persisted to IndexerDeadLetter.error. */
 const MAX_ERROR_LENGTH = 500;
 
+/**
+ * Soroban RPC only serves a rolling window of ledgers (~7 days; the testnet RPC
+ * reports roughly 120,960), so `startLedger` outside it is rejected outright
+ * with `startLedger must be within the ledger range`. Two cases have to be kept
+ * inside the window: a fresh cursor of 0, and a cursor older than the window
+ * (the indexer was down for longer than the RPC retains history).
+ */
+const RPC_LEDGER_WINDOW = 120_960;
+
+/**
+ * Where a fresh indexer starts. It cannot backfill from genesis, so it begins
+ * just behind the chain tip and picks up events emitted before its first boot.
+ */
+const FIRST_RUN_LOOKBACK_LEDGERS = 100;
+
 const CONTRACT_IDS = [
   config.ESCROW_CONTRACT_ID,
   config.DISPUTE_CONTRACT_ID,
@@ -55,6 +74,11 @@ export interface SorobanEventSource {
     filters: SorobanRpc.Api.EventFilter[];
     limit?: number;
   }): Promise<{ events: ContractEventLike[]; latestLedger: number }>;
+  /**
+   * Chain tip, used to keep `startLedger` inside the RPC's retention window.
+   * Optional so tests and other callers can supply just `getEvents`.
+   */
+  getLatestLedger?(): Promise<number>;
 }
 
 /** Persisted indexer cursor. */
@@ -91,9 +115,57 @@ async function poll() {
       },
     };
 
-    await processContractEvents(rpcServer, cursor, CONTRACT_IDS);
+    const source: SorobanEventSource = {
+      getEvents: (request) => rpcServer.getEvents(request),
+      getLatestLedger: async () => (await rpcServer.getLatestLedger()).sequence,
+    };
+
+    await processContractEvents(source, cursor, CONTRACT_IDS);
   } catch (err) {
     console.error("[indexer] Poll error:", err);
+  }
+}
+
+/**
+ * Pick the ledger to scan from.
+ *
+ * A cursor of 0 means "never run": starting at ledger 1 makes the RPC reject
+ * every poll because the ledger is older than it retains, which is exactly the
+ * failure that leaves a fresh deployment with an indexer that logs forever and
+ * never syncs.
+ */
+export async function resolveStartLedger(
+  source: SorobanEventSource,
+  cursorLedger: number,
+): Promise<number> {
+  const latest = await chainTip(source);
+  if (latest === null) return cursorLedger + 1; // no tip available; trust the cursor
+
+  if (cursorLedger === 0) {
+    return Math.max(1, latest - FIRST_RUN_LOOKBACK_LEDGERS);
+  }
+
+  const earliest = latest - RPC_LEDGER_WINDOW + 1;
+  const start = cursorLedger + 1;
+  if (start < earliest) {
+    console.warn(
+      `[indexer] cursor at ledger ${cursorLedger} is older than the RPC window; ` +
+        `skipping to ${earliest}. Events between the two are no longer retrievable.`,
+    );
+    return earliest;
+  }
+  return start;
+}
+
+/** Chain tip, or null when the source cannot report one or the call fails. */
+async function chainTip(source: SorobanEventSource): Promise<number | null> {
+  if (!source.getLatestLedger) return null;
+  try {
+    return await source.getLatestLedger();
+  } catch (err) {
+    // Falling back to the cursor beats skipping a poll entirely.
+    console.error("[indexer] could not read the chain tip", err);
+    return null;
   }
 }
 
@@ -118,8 +190,10 @@ export async function processContractEvents(
     contractIds: [contractId],
   }));
 
+  const startLedger = await resolveStartLedger(source, lastLedger);
+
   const res = await source.getEvents({
-    startLedger: lastLedger + 1,
+    startLedger,
     filters,
     limit: EVENT_PAGE_LIMIT,
   });

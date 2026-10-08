@@ -5,7 +5,7 @@ import {
   decodeEventName,
   type ContractEventLike,
 } from "../lib/events";
-import { processContractEvents } from "../indexer";
+import { processContractEvents, resolveStartLedger } from "../indexer";
 
 /** Build an ScMap the way `#[contractevent]` data is encoded. */
 function mapVal(entries: Record<string, xdr.ScVal>): xdr.ScVal {
@@ -114,6 +114,54 @@ describe("processContractEvents", () => {
     // Fetch first, dispatch in between, persist the cursor last.
     expect(order[0]).toBe("getEvents");
     expect(order[order.length - 1]).toBe("set:12");
+  });
+
+  it("starts a fresh indexer inside the RPC's ledger window", async () => {
+    // Ledger 1 is far outside what Soroban RPC retains, so a fresh cursor has to
+    // start near the tip or every poll fails with `startLedger must be within
+    // the ledger range`.
+    const TIP = 5_090_272;
+    const source = { getEvents: vi.fn(), getLatestLedger: async () => TIP };
+
+    const start = await resolveStartLedger(source, 0);
+
+    expect(start).toBe(TIP - 100);
+    expect(start).toBeGreaterThan(TIP - 120_960);
+  });
+
+  it("resumes from the cursor when one exists", async () => {
+    const source = { getEvents: vi.fn(), getLatestLedger: async () => 5_000_000 };
+
+    expect(await resolveStartLedger(source, 4_999_990)).toBe(4_999_991);
+  });
+
+  it("clamps a cursor older than the RPC window instead of failing every poll", async () => {
+    const TIP = 5_000_000;
+    const source = { getEvents: vi.fn(), getLatestLedger: async () => TIP };
+    const stale = TIP - 200_000;
+
+    const start = await resolveStartLedger(source, stale);
+
+    expect(start).toBe(TIP - 120_960 + 1);
+    expect(start).toBeGreaterThan(stale + 1);
+  });
+
+  it("trusts the cursor when the source cannot report a chain tip", async () => {
+    const source = { getEvents: vi.fn() };
+
+    expect(await resolveStartLedger(source, 0)).toBe(1);
+    expect(await resolveStartLedger(source, 42)).toBe(43);
+  });
+
+  it("still polls when reading the chain tip fails", async () => {
+    const source = {
+      getEvents: vi.fn(),
+      getLatestLedger: async () => {
+        throw new Error("rpc down");
+      },
+    };
+
+    expect(await resolveStartLedger(source, 7)).toBe(8);
   });
 
   it("does not call getEvents when no contracts are configured", async () => {
