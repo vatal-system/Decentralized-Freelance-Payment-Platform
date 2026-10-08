@@ -23,7 +23,7 @@ interface MilestoneRow {
 }
 
 export default function PostJob() {
-  const { createAndFund, loading, error } = useEscrow();
+  const { createAndFund, isPending, error } = useEscrow();
   const { publicKey, connect, connecting } = useWallet();
 
   const [freelancer, setFreelancer] = useState("");
@@ -127,8 +127,16 @@ export default function PostJob() {
           </label>
         </p>
 
-        <button type="submit" className="btn-primary" disabled={loading || connecting}>
-          {loading ? "Submitting…" : publicKey ? "Create & Fund Escrow" : "Connect & Continue"}
+        <button
+          type="submit"
+          className="btn-primary"
+          disabled={isPending("create") || connecting}
+        >
+          {isPending("create")
+            ? "Submitting…"
+            : publicKey
+              ? "Create & Fund Escrow"
+              : "Connect & Continue"}
         </button>
       </form>
 

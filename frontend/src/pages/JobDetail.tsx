@@ -18,7 +18,8 @@ const POLL_MS = 5_000;
 
 export default function JobDetail() {
   const { id } = useParams<{ id: string }>();
-  const { getEscrow, releaseMilestone, openDispute, loading, error } = useEscrow();
+  const { getEscrow, releaseMilestone, openDispute, isPending, hasPendingWrite, error } =
+    useEscrow();
   const { publicKey, connect } = useWallet();
   const [escrow, setEscrow] = useState<EscrowView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -28,10 +29,12 @@ export default function JobDetail() {
 
   const refresh = useCallback(async () => {
     if (escrowId === null) return;
+    // Don't let a background poll clobber state with a read that raced a write.
+    if (hasPendingWrite()) return;
     const data = await getEscrow(escrowId);
     if (data) setEscrow(data);
     else setLoadError("Could not load escrow (is the id correct?)");
-  }, [escrowId, getEscrow]);
+  }, [escrowId, getEscrow, hasPendingWrite]);
 
   useEffect(() => {
     void refresh();
@@ -96,7 +99,7 @@ export default function JobDetail() {
                     )} remaining`}{" "}
                 {isClient && isActive && !m.released && (
                   <button
-                    disabled={loading}
+                    disabled={isPending("release", `${escrowId}:${i}`)}
                     onClick={() =>
                       void releaseMilestone(escrowId, i).then((res) => {
                         if (res) setLastHash(res.hash);
@@ -113,7 +116,7 @@ export default function JobDetail() {
 
           {isParticipant && isActive && (
             <button
-              disabled={loading}
+              disabled={isPending("dispute", `${escrowId}`)}
               onClick={() =>
                 void openDispute(escrowId).then((res) => {
                   if (res) setLastHash(res.hash);

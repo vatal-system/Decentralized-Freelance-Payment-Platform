@@ -11,9 +11,11 @@
  * - Amounts are i128 stroops (7 decimals). Use `toStroops`/`fromStroops`.
  * - `createAndFund` runs two transactions (create then fund) because the
  *   contracts keep them separate on purpose.
+ * - In-flight operations are tracked per target (kind + key), so unrelated
+ *   buttons stay enabled and a target cannot be submitted twice.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { TransactionBuilder, SorobanRpc, xdr } from "@stellar/stellar-sdk";
 import {
   CONTRACT_ADDRESSES,
@@ -66,14 +68,35 @@ export interface CreateAndFundResult {
   hash: string;
 }
 
+/** The kinds of operation the hook can have in flight. */
+export type OpKind = "create" | "release" | "dispute" | "read" | "reputation";
+
+const WRITE_KINDS: OpKind[] = ["create", "release", "dispute"];
+
 export function useEscrow() {
   const { publicKey, connect, sign } = useWallet();
-  const [loading, setLoading] = useState(false);
+  const [pendingOps, setPendingOps] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Source of truth for in-flight ops; the state mirrors it for rendering, and
+  // the ref stays current inside async callbacks (e.g. the poll in JobDetail).
+  const pendingRef = useRef<Set<string>>(new Set());
 
-  const withKey = useCallback(
-    async <T,>(fn: (pk: string) => Promise<T>): Promise<T | undefined> => {
-      setLoading(true);
+  const syncPending = useCallback(() => {
+    setPendingOps([...pendingRef.current]);
+  }, []);
+
+  /** Run an operation, guarding against a duplicate start for the same target. */
+  const run = useCallback(
+    async <T>(
+      kind: OpKind,
+      key: string,
+      fn: (pk: string) => Promise<T>,
+    ): Promise<T | undefined> => {
+      const id = `${kind}:${key}`;
+      if (pendingRef.current.has(id)) return undefined; // double-submit guard
+
+      pendingRef.current.add(id);
+      syncPending();
       setError(null);
       try {
         const pk = publicKey ?? (await connect());
@@ -83,10 +106,27 @@ export function useEscrow() {
         setError(friendlyError(e));
         return undefined;
       } finally {
-        setLoading(false);
+        pendingRef.current.delete(id);
+        syncPending();
       }
     },
-    [publicKey, connect],
+    [publicKey, connect, syncPending],
+  );
+
+  /** Is an operation in flight? Narrow by `kind` and/or exact `key`. */
+  const isPending = useCallback(
+    (kind?: OpKind, key?: string) => {
+      if (!kind) return pendingOps.length > 0;
+      if (key === undefined) return pendingOps.some((id) => id.startsWith(`${kind}:`));
+      return pendingOps.includes(`${kind}:${key}`);
+    },
+    [pendingOps],
+  );
+
+  /** Is any state-changing write pending? Used to pause background polling. */
+  const hasPendingWrite = useCallback(
+    () => [...pendingRef.current].some((id) => WRITE_KINDS.some((k) => id.startsWith(`${k}:`))),
+    [],
   );
 
   /**
@@ -120,7 +160,7 @@ export function useEscrow() {
   /** Create an escrow and immediately fund it. Returns the id and the fund hash. */
   const createAndFund = useCallback(
     (freelancer: string, milestones: MilestoneInput[], expiry: bigint) =>
-      withKey(async (pk): Promise<CreateAndFundResult> => {
+      run("create", freelancer, async (pk): Promise<CreateAndFundResult> => {
         const escrow = CONTRACT_ADDRESSES.escrow;
         const created = await submit(pk, escrow, "create", [
           scAddress(pk),
@@ -133,51 +173,51 @@ export function useEscrow() {
         const funded = await submit(pk, escrow, "fund", [scU64(id)]);
         return { id, hash: funded.hash };
       }),
-    [submit, withKey],
+    [run, submit],
   );
 
   /** Client releases a milestone to the freelancer. */
   const releaseMilestone = useCallback(
     (escrowId: bigint, milestoneIndex: number) =>
-      withKey((pk) =>
+      run("release", `${escrowId}:${milestoneIndex}`, (pk) =>
         submit(pk, CONTRACT_ADDRESSES.escrow, "release_milestone", [
           scU64(escrowId),
           scU32(milestoneIndex),
         ]),
       ),
-    [submit, withKey],
+    [run, submit],
   );
 
   /** Either party freezes the escrow by opening a dispute. */
   const openDispute = useCallback(
     (escrowId: bigint) =>
-      withKey((pk) =>
+      run("dispute", `${escrowId}`, (pk) =>
         submit(pk, CONTRACT_ADDRESSES.escrow, "open_dispute", [
           scU64(escrowId),
           scAddress(pk),
         ]),
       ),
-    [submit, withKey],
+    [run, submit],
   );
 
   /** Read a single escrow (view). */
   const getEscrow = useCallback(
     (escrowId: bigint) =>
-      withKey((pk) =>
+      run("read", `${escrowId}`, (pk) =>
         readContract<EscrowView>(pk, CONTRACT_ADDRESSES.escrow, "get", [scU64(escrowId)]),
       ),
-    [withKey],
+    [run],
   );
 
   /** Read a user's reputation aggregate (view). */
   const getReputation = useCallback(
     (address: string) =>
-      withKey((pk) =>
+      run("reputation", address, (pk) =>
         readContract<ReputationView>(pk, CONTRACT_ADDRESSES.reputation, "get_aggregate", [
           scAddress(address),
         ]),
       ),
-    [withKey],
+    [run],
   );
 
   return {
@@ -186,7 +226,9 @@ export function useEscrow() {
     openDispute,
     getEscrow,
     getReputation,
-    loading,
+    pendingOps,
+    isPending,
+    hasPendingWrite,
     error,
   };
 }

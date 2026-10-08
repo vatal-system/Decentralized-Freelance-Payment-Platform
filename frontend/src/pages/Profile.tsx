@@ -13,7 +13,7 @@ import { useWallet } from "../hooks/wallet-context";
 
 export default function Profile() {
   const { address } = useParams<{ address: string }>();
-  const { getReputation, loading, error } = useEscrow();
+  const { getReputation, isPending, error } = useEscrow();
   const { publicKey, connect } = useWallet();
   const [reputation, setReputation] = useState<ReputationView | null>(null);
 
@@ -40,7 +40,7 @@ export default function Profile() {
         </p>
       )}
 
-      {loading && <p>Loading…</p>}
+      {isPending("reputation") && <p>Loading…</p>}
       {error && (
         <p role="alert" className="alert alert-error">
           {error}
