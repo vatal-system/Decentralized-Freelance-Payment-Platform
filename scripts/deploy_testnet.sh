@@ -12,6 +12,21 @@
 #             – Stellar Asset Contract id for USDC on the target network.
 #               If unset, deployment still runs but the frontend .env will not
 #               get a USDC address. See docs/TESTNET.md for how to obtain it.
+#   XLM_CONTRACT_ID
+#             – Stellar Asset Contract id for native XLM on the target network.
+#               On testnet this is
+#               CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC.
+#               If unset, the frontend falls back to its built-in default.
+#   VITE_API_URL
+#             – base URL of the backend REST API baked into frontend/.env.
+#               Leave unset for local development (defaults to localhost:3000);
+#               set it to the deployed backend origin before building for a
+#               hosted frontend.
+#   KEEP_FRONTEND_ENV
+#             – set to 1 to keep an existing frontend/.env untouched. By default
+#               the file is regenerated (a previous one is backed up to
+#               frontend/.env.bak), because contract ids from an earlier deploy
+#               are stale the moment the contracts are redeployed.
 #
 # Requirements:
 #   - stellar-cli v25.2.0+  (v28 is current)
@@ -29,6 +44,8 @@ NETWORK="${NETWORK:-testnet}"
 IDENTITY="${IDENTITY:-deployer}"
 USDC_CONTRACT_ID="${USDC_CONTRACT_ID:-}"
 XLM_CONTRACT_ID="${XLM_CONTRACT_ID:-}"
+VITE_API_URL="${VITE_API_URL:-}"
+KEEP_FRONTEND_ENV="${KEEP_FRONTEND_ENV:-}"
 
 command -v stellar >/dev/null || {
   echo "error: stellar-cli not found. Install v25.2.0+ from https://github.com/stellar/stellar-cli/releases" >&2
@@ -90,11 +107,20 @@ JSON
 
 echo "==> Wrote $DEPLOYMENTS_DIR/testnet.json"
 
-# Best-effort: write the frontend env file if it does not exist yet.
+# Contract ids change on every deploy, so a stale frontend/.env silently points
+# the app at the previous contracts. Regenerate it (keeping a backup) unless the
+# caller explicitly asked us to leave it alone.
 FE_ENV="$REPO_ROOT/frontend/.env"
-if [ ! -f "$FE_ENV" ]; then
+if [ -f "$FE_ENV" ] && [ "$KEEP_FRONTEND_ENV" = "1" ]; then
+  echo "==> KEEP_FRONTEND_ENV=1, leaving $FE_ENV untouched"
+else
+  if [ -f "$FE_ENV" ]; then
+    cp "$FE_ENV" "$FE_ENV.bak"
+    echo "==> Backed up the previous $FE_ENV to $FE_ENV.bak"
+  fi
   cat > "$FE_ENV" <<ENV
 VITE_NETWORK=$NETWORK
+VITE_API_URL=$VITE_API_URL
 VITE_ESCROW_CONTRACT_ID=$ESCROW_CONTRACT_ID
 VITE_DISPUTE_CONTRACT_ID=$DISPUTE_CONTRACT_ID
 VITE_REPUTATION_CONTRACT_ID=$REPUTATION_CONTRACT_ID
@@ -102,8 +128,6 @@ VITE_USDC_CONTRACT_ID=$USDC_CONTRACT_ID
 VITE_XLM_CONTRACT_ID=$XLM_CONTRACT_ID
 ENV
   echo "==> Wrote $FE_ENV"
-else
-  echo "==> $FE_ENV already exists, leaving it untouched"
 fi
 
 echo "==> Done."

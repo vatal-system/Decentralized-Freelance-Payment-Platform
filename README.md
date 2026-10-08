@@ -27,12 +27,13 @@ Honest snapshot of what works today (see [`docs/TESTNET.md`](./docs/TESTNET.md) 
 | `escrow` contract | ✅ Complete — milestones, expiry refunds, validated inputs, TTL, events |
 | `dispute` contract | ✅ Complete — verified raise, M-of-N arbitrator panel resolution that calls back into escrow |
 | `reputation` contract | ✅ Complete — escrow-verified 1–5 ratings, amount-weighted aggregates (`docs/REPUTATION.md`) |
-| Contract tests | ✅ 48 tests: every state transition + failure path, plus 3 cross-contract integration tests |
+| Contract tests | ✅ 81 tests: every state transition + failure path, plus 3 cross-contract integration tests |
 | Testnet deployment | ✅ Deployed and initialized (IDs in `deployments/testnet.json`) |
 | Frontend | 🟡 Functional MVP — connect Freighter, create/fund a job, release milestones, view status, open a dispute, read reputation |
-| Backend API | ✅ Routes + auth implemented; contract-event indexer syncs DB state from Soroban RPC |
+| Backend API | ✅ Routes + auth implemented; contract-event indexer syncs DB state from Soroban RPC, with a dead-letter table for events it cannot apply |
 | Job discovery / filtering | ✅ Dashboard lists jobs with status/pagination (from the backend API) |
 | Multi-arbitrator / timelocked disputes | ✅ Multi-arbitrator panel with a timelock escape hatch from `Disputed` (see `docs/DISPUTES.md`) |
+| Dispute resolution authorization | ✅ `POST /api/disputes/:id/resolve` requires an `ARBITRATOR_ADDRESSES` allowlist entry |
 | USDC configuration | ❌ Not wired on testnet yet — the demo uses the XLM SAC |
 | Security audit | ❌ Not audited |
 
@@ -42,9 +43,9 @@ Scoped work is tracked in [`docs/wave-issues/`](./docs/wave-issues/).
 
 | Contract | Contract ID |
 |----------|-------------|
-| escrow | `CBC4AW7IGPPIVYWASG2QKWZZXBKUSZXQXFS5ZZMAH7YN55DCHKCH65NJ` |
-| dispute | `CAKXHJQHJENFY4UYWH5LAMORP4TE3T223AVHGWRN7T6K2OQUPK7E4BEW` |
-| reputation | `CCHFZMOHTD26BAYF4NQHTXEAHOW66HPK7DRXHUWQDUQBM7OFNJT7UZTP` |
+| escrow | `CALNRFGMUI7MLNLWO445U2BSDENF6DENURHXXFFRT6PV5GSOQX7GZGP7` |
+| dispute | `CB24TF5GPP7EA6VWK4KZWBHHSY6FWNV3DKOGSZSDK347EODGGNPN7IMF` |
+| reputation | `CA5GXR4LVH5DYGB2RZDFAM3VNJW6LQ5EKUKURSLZBJGAH7LFJAOHKSET` |
 
 See [`docs/TESTNET.md`](./docs/TESTNET.md) for explorer links and reproduction steps.
 
@@ -84,6 +85,25 @@ for the registry and how to add one.
 - **Payments**: Stellar Asset Contract (USDC in production)
 - **Data**: Soroban RPC + Horizon API
 - **Backend**: Express + Prisma + PostgreSQL
+
+## Deployment
+
+Contract ids are recorded in [`deployments/testnet.json`](./deployments/testnet.json)
+and change on every deploy. `scripts/deploy_testnet.sh` regenerates
+`frontend/.env` automatically (backing up the previous file) so the app never
+keeps pointing at superseded contracts.
+
+- **Frontend** — static Vite build, deployable to any static host (Vercel,
+  Netlify, GitHub Pages). Set the `VITE_*` variables at build time; Vite inlines
+  them, so changing one requires a rebuild. `frontend/vercel.json` ships the SPA
+  rewrite that React Router needs for deep links.
+- **Backend** — needs a long-running process (the event indexer polls Soroban RPC
+  in-process) plus PostgreSQL, so it runs as a container rather than a serverless
+  function. `backend/Dockerfile` applies migrations on start.
+- **CORS** — set `CORS_ORIGIN` to the frontend origin so the API is not open to
+  every origin. Comma-separate multiple origins.
+
+See [`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md) for the full checklist.
 
 ## Getting Started
 

@@ -8,6 +8,7 @@ test_snapshots/
 node_modules/
 dist/
 .env
+.env.bak
 
 
 # IDE

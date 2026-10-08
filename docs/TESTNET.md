@@ -5,16 +5,21 @@ are testnet-only deployments; never send real funds to them.
 
 | Contract | Contract ID | Explorer |
 |----------|-------------|----------|
-| escrow | `CBC4AW7IGPPIVYWASG2QKWZZXBKUSZXQXFS5ZZMAH7YN55DCHKCH65NJ` | https://lab.stellar.org/r/testnet/contract/CBC4AW7IGPPIVYWASG2QKWZZXBKUSZXQXFS5ZZMAH7YN55DCHKCH65NJ |
-| dispute | `CAKXHJQHJENFY4UYWH5LAMORP4TE3T223AVHGWRN7T6K2OQUPK7E4BEW` | https://lab.stellar.org/r/testnet/contract/CAKXHJQHJENFY4UYWH5LAMORP4TE3T223AVHGWRN7T6K2OQUPK7E4BEW |
-| reputation | `CCHFZMOHTD26BAYF4NQHTXEAHOW66HPK7DRXHUWQDUQBM7OFNJT7UZTP` | https://lab.stellar.org/r/testnet/contract/CCHFZMOHTD26BAYF4NQHTXEAHOW66HPK7DRXHUWQDUQBM7OFNJT7UZTP |
+| escrow | `CALNRFGMUI7MLNLWO445U2BSDENF6DENURHXXFFRT6PV5GSOQX7GZGP7` | https://lab.stellar.org/r/testnet/contract/CALNRFGMUI7MLNLWO445U2BSDENF6DENURHXXFFRT6PV5GSOQX7GZGP7 |
+| dispute | `CB24TF5GPP7EA6VWK4KZWBHHSY6FWNV3DKOGSZSDK347EODGGNPN7IMF` | https://lab.stellar.org/r/testnet/contract/CB24TF5GPP7EA6VWK4KZWBHHSY6FWNV3DKOGSZSDK347EODGGNPN7IMF |
+| reputation | `CA5GXR4LVH5DYGB2RZDFAM3VNJW6LQ5EKUKURSLZBJGAH7LFJAOHKSET` | https://lab.stellar.org/r/testnet/contract/CA5GXR4LVH5DYGB2RZDFAM3VNJW6LQ5EKUKURSLZBJGAH7LFJAOHKSET |
 
 - **Network:** testnet (`Test SDF Network ; September 2015`)
 - **Admin / arbitrator:** `GBPLJHDI6RPLS4EEJJTM7EVEV3UNTXLFAACWA63QSTHGLWH5RO3LQ75B`
+  (the panel is `init(arbitrators=[admin], threshold=1)`)
 - **USDC contract:** *not configured* — the demo uses the testnet XLM SAC
   (`CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`) so it can run
   without Circle testnet USDC. Set `USDC_CONTRACT_ID` before deploying to use a
   real USDC SAC.
+
+> These ids are from the most recent deploy and are replaced whenever the
+> contracts change. `scripts/deploy_testnet.sh` rewrites `deployments/testnet.json`
+> and `frontend/.env` for you, so re-run it instead of hand-editing either file.
 - The machine-readable record lives in [`../deployments/testnet.json`](../deployments/testnet.json).
 
 ## Reproduce the deployment
