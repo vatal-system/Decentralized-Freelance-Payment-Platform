@@ -93,7 +93,32 @@ export function createApp() {
   app.set("json replacer", jsonReplacer);
   app.use(rateLimit({ windowMs: 60_000, max: 100 }));
 
-  app.get("/health", (_req, res) => res.json({ status: "ok" }));
+  app.get("/health", async (_req, res) => {
+  const dbOk = await checkDbHealth();
+  const indexerOk = await checkIndexerHealth();
+
+  if (!dbOk || !indexerOk) {
+    return res.status(503).json({
+      status: "unhealthy",
+      db: !dbOk,
+      indexer: !indexerOk,
+    });
+  }
+
+  // Also check indexer staleness: if cursor hasn't advanced recently,
+  // return degraded status even if indexer is running
+  const indexerStale = await checkIndexerStaleness();
+  if (indexerStale) {
+    return res.status(200).json({
+      status: "degraded",
+      db: true,
+      indexer: false,
+      message: "Indexer has not advanced recently",
+    });
+  }
+
+  return res.json({ status: "ok", db: true, indexer: true });
+});
 
   app.use("/api/users", usersRouter);
   app.use("/api/jobs", jobsRouter);
@@ -110,4 +135,45 @@ export function createApp() {
   app.use(errorHandler);
 
   return app;
+}
+
+/**
+ * Check if the indexer cursor has advanced beyond a reasonable threshold.
+ * Returns true if the indexer appears stuck (cursor at 0 or hasn't advanced in a while). */
+async function checkIndexerStaleness(): Promise<boolean> {
+  try {
+    const cursor = await prisma.indexerCursor.findUnique({ where: { id: "main" } });
+    if (!cursor) return true; // no cursor table yet
+    // If cursor is at 0, the indexer has never successfully polled
+    if (cursor.lastLedger === 0) return true;
+    // If the cursor hasn't been updated in over 24h, consider it stale
+    const now = Date.now();
+    const lastUpdated = new Date(cursor.updatedAt).getTime();
+    const stalenessThreshold = 24 * 60 * 60 * 1000; // 24 hours
+    if (now - lastUpdated > stalenessThreshold) return true;
+    return false;
+  } catch {
+    // If we can't read the cursor, assume stale (conservative)
+    return true;
+  }
+}
+
+/** Check database connectivity with a cheap query */
+async function checkDbHealth(): Promise<boolean> {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Check indexer health by reading the cursor */
+async function checkIndexerHealth(): Promise<boolean> {
+  try {
+    const cursor = await prisma.indexerCursor.findUnique({ where: { id: "main" } });
+    return !!(cursor && cursor.lastLedger > 0);
+  } catch {
+    return false;
+  }
 }

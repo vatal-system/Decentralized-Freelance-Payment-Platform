@@ -11,8 +11,51 @@ import { MAX_JOB_TAGS, SKILL_TAG_SLUGS } from "../lib/tags";
 
 // Two checksum-valid account ids: Circle's Stellar testnet USDC issuer and the
 // admin of the deployments in deployments/testnet.json.
-const USDC_ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-const DEPLOY_ADMIN = "GBPLJHDI6RPLS4EEJJTM7EVEV3UNTXLFAACWA63QSTHGLWH5RO3LQ75B";
+
+// Health endpoint operational checks (issue #93)
+
+describe("GET /health", () => {
+  it("returns 200 with status ok when DB and indexer are healthy", async () => {
+    const { createApp } = await import("../app");
+    const app = createApp();
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no port assigned");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    
+    const res = await fetch(`${baseUrl}/health`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe("ok");
+    expect(body.db).toBe(true);
+    expect(body.indexer).toBe(true);
+    await server.close();
+  });
+
+  it("returns 503 when database is unreachable", async () => {
+    // Mock prisma.$queryRaw to throw when DB is down
+    vi.stubEnv("DATABASE_URL", "postgresql://invalid:invalid@host:5432/nonexistent");
+    
+    const { createApp } = await import("../app");
+    const app = createApp();
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no port assigned");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    
+    const res = await fetch(`${baseUrl}/health`);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.status).toBe("unhealthy");
+    expect(body.db).toBe(false);
+    await server.close();
+  });
+});
+
 
 describe("stellar address validation", () => {
   it("accepts checksum-valid G addresses", () => {

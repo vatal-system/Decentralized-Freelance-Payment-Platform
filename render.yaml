@@ -98,3 +98,17 @@ services:
       - key: TRUST_PROXY
         value: "1"
 
+# Health probes
+# -------------
+# The /health endpoint is a lightweight liveness probe that checks:
+#   - PostgreSQL connectivity (SELECT 1)
+#   - Indexer cursor has advanced beyond ledger 0
+# Returns 200 { status: "ok", db: true, indexer: true } or 503 if unhealthy.
+#
+# The /ready endpoint is a readiness check for platform orchestration:
+#   - Same checks as /health, intended for gating traffic.
+#   - Platforms (Render, Railway, Fly) should use this as the `readinessProbe`.
+#   - Returns 200 when fully ready, 503 when any dependency is unhealthy.
+#
+# Render's healthCheckPath is set to /health (liveness probe). For readiness,
+# use the /ready endpoint in your platform's configuration.
