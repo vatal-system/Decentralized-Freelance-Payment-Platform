@@ -103,14 +103,40 @@ inlines them at build time, so **changing any of them requires a redeploy**:
 | `VITE_XLM_CONTRACT_ID` | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
 | `VITE_USDC_CONTRACT_ID` | empty until a USDC SAC is configured |
 | `VITE_API_URL` | the backend origin from step 3, e.g. `https://api.example.com` |
+| `VITE_READONLY_SOURCE` | optional — see *Read-only source* below; leave empty in the normal case |
 
 Without `VITE_API_URL` the app falls back to `http://localhost:3000`
 (`frontend/src/lib/api.ts`) and the job list will fail for every visitor.
 
-The same set applies to the **containerised** frontend. `frontend/Dockerfile`
-declares every one of these as a build arg — `VITE_API_URL` and
-`VITE_XLM_CONTRACT_ID` included — and `docker-compose.yml` forwards each from
-the shell, so a container can be pointed at a non-local API and can offer XLM:
+### Read-only source (`VITE_READONLY_SOURCE`)
+
+Escrow state and reputation are public contract views. The frontend reads them
+from a **read-only source account** rather than from the visitor's wallet, so a
+shared `/jobs/:id` or `/profile/:address` link renders before anyone connects
+Freighter (issue #108). A read only *simulates* the call: the source never signs
+and is never charged.
+
+By default **no account is needed at all.** Soroban simulates the call without
+requiring the source account to exist in the ledger, so
+`frontend/src/lib/stellar.ts` builds the simulation from a built-in, secret-less
+all-zero key and reads work with no wallet, no extension and no funded account.
+
+Set `VITE_READONLY_SOURCE` to the public key of any **funded** account only if
+the RPC provider you use rejects simulations from an unknown source. The frontend
+then loads it with `getAccount` and uses its real sequence number. A throwaway
+account is enough and no secret is needed anywhere, because the app never signs
+with it:
+
+```bash
+stellar keys generate readonly --network testnet --fund
+stellar keys address readonly   # put this G... value in VITE_READONLY_SOURCE
+```
+
+The same set (plus the optional `VITE_READONLY_SOURCE`) applies to the
+**containerised** frontend. `frontend/Dockerfile` declares every one of these as
+a build arg — `VITE_API_URL` and `VITE_XLM_CONTRACT_ID` included — and
+`docker-compose.yml` forwards each from the shell, so a container can be pointed
+at a non-local API and can offer XLM:
 
 ```bash
 VITE_API_URL=https://api.example.com docker compose up --build

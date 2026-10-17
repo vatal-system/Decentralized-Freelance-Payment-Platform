@@ -245,6 +245,13 @@ React + TypeScript + Vite, with Freighter for signing.
 | `/jobs/:id` | `JobDetail` | Milestone state (incl. `released_amount`), release, dispute, rating, transaction links |
 | `/profile/:address` | `Profile` | On-chain reputation aggregate (weighted average + rating count) |
 
+Both of those are **public reads**: the escrow view and the reputation aggregate
+are simulated from a read-only source account (`VITE_READONLY_SOURCE`, no wallet
+required), so a shared link renders before Freighter is connected. Only writes —
+create/fund, release, dispute, reclaim, rate — need a wallet. A read that fails
+says whether the record does not exist or the network could not be reached,
+rather than blaming the link.
+
 A connected wallet can bookmark a job from the list and switch it to a
 saved-only view (`frontend/src/hooks/useSavedJobs.ts`); bookmarks are personal
 and off-chain, stored per user, and the toggle is idempotent on both sides.
@@ -336,8 +343,9 @@ docker compose up --build
 Pass any `VITE_*` value through the environment to bake it into the frontend
 image — compose forwards the whole set (`VITE_NETWORK`, `VITE_API_URL`,
 `VITE_ESCROW_CONTRACT_ID`, `VITE_DISPUTE_CONTRACT_ID`,
-`VITE_REPUTATION_CONTRACT_ID`, `VITE_USDC_CONTRACT_ID`, `VITE_XLM_CONTRACT_ID`)
-as build args, so a containerised build is not stuck on `http://localhost:3000`:
+`VITE_REPUTATION_CONTRACT_ID`, `VITE_USDC_CONTRACT_ID`, `VITE_XLM_CONTRACT_ID`,
+`VITE_READONLY_SOURCE`) as build args, so a containerised build is not stuck on
+`http://localhost:3000`:
 
 ```bash
 VITE_API_URL=https://api.example.com \
@@ -392,6 +400,7 @@ not just a restart.
 | `VITE_DISPUTE_CONTRACT_ID` | ✅ | Deployed dispute contract |
 | `VITE_REPUTATION_CONTRACT_ID` | ✅ | Deployed reputation contract |
 | `VITE_API_URL` | for hosted deploys | Backend origin; defaults to `http://localhost:3000` |
+| `VITE_READONLY_SOURCE` | only if your RPC requires it | Funded public key used to simulate public reads; unset uses a built-in secret-less key, so `/jobs/:id` and `/profile/:address` need no account. See [`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md) |
 | `VITE_XLM_CONTRACT_ID` | to pay in XLM | Testnet XLM SAC: `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
 | `VITE_USDC_CONTRACT_ID` | to pay in USDC | Empty until a USDC SAC is configured on testnet |
 

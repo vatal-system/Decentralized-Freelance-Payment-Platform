@@ -47,6 +47,7 @@ vi.mock("@stellar/stellar-sdk", () => ({
   xdr: {},
 }));
 
+import { ContractReadError } from "../lib/errors";
 import { useEscrow } from "./useEscrow";
 // The mocked helpers, so we can assert how the arguments are encoded.
 import { scString, scU32, scU64 } from "../lib/stellar";
@@ -248,17 +249,17 @@ describe("useEscrow transaction state", () => {
     });
 
     expect(deadline).toBe(1_700_000_000n);
-    const [pk, contractId, method, args] = h.readContract.mock.calls[0] as unknown as [
-      string,
+    // Reads take no source key: the read-only source lives in lib/stellar.ts.
+    const [contractId, method, args] = h.readContract.mock.calls[0] as unknown as [
       string,
       string,
       unknown[],
     ];
-    expect(pk).toBe("GCLIENT");
     expect(contractId).toBe("CESCROW");
     expect(method).toBe("dispute_deadline");
     expect(args).toHaveLength(1);
     expect(scU64).toHaveBeenCalledWith(7n);
+    expect(h.wallet.connect).not.toHaveBeenCalled();
   });
 
   it("counts a rating as a pending write so background polling pauses", async () => {
@@ -324,6 +325,66 @@ describe("useEscrow transaction state", () => {
 
     expect(result.current.lastFailure).toEqual({ kind: "rate", code: null });
     expect(result.current.error).toBe("wallet not connected");
+  });
+
+  it("reads escrow and reputation with no wallet connected (shared links)", async () => {
+    // The regression in #108: a read called connect() (or fell back to the
+    // visitor's possibly unfunded account) before it could simulate.
+    h.wallet.publicKey = null;
+    h.readContract.mockResolvedValueOnce({ status: "Active" });
+    const { result } = renderEscrow();
+
+    let view: unknown;
+    await act(async () => {
+      view = await result.current.getEscrow(7n);
+    });
+
+    expect(view).toEqual({ status: "Active" });
+    expect(h.readContract).toHaveBeenCalledWith("CESCROW", "get", expect.anything());
+
+    h.readContract.mockResolvedValueOnce({ total_score: 0n, weight: 0n, count: 0n });
+    await act(async () => {
+      await result.current.getReputation("GFREELANCER");
+    });
+    expect(h.readContract).toHaveBeenLastCalledWith(
+      "CREP",
+      "get_aggregate",
+      expect.anything(),
+    );
+    expect(h.wallet.connect).not.toHaveBeenCalled();
+  });
+
+  it("unwraps the decoded enum status so live escrow gating matches", async () => {
+    // The contract's `status` decodes as ["Active"]; without unwrapping it, the
+    // badge crashes and `status === "Active"` is silently false on live data.
+    h.readContract.mockResolvedValueOnce({ status: ["Active"], milestones: [] });
+    const { result } = renderEscrow();
+
+    let view: { status: unknown } | undefined;
+    await act(async () => {
+      view = await result.current.getEscrow(7n);
+    });
+    expect(view?.status).toBe("Active");
+  });
+
+  it("rejects with a typed failure so pages can tell not-found from offline", async () => {
+    h.wallet.publicKey = null;
+    h.readContract.mockRejectedValueOnce(new Error("HostError: Error(Contract, #1)"));
+    const { result } = renderEscrow();
+
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.getEscrow(99n);
+      } catch (e) {
+        caught = e;
+      }
+    });
+
+    expect(caught).toBeInstanceOf(ContractReadError);
+    expect((caught as ContractReadError).kind).toBe("not-found");
+    // A failed read is not a write failure: it must not surface as `error`.
+    expect(result.current.error).toBeNull();
   });
 
   it("clears a previous error after a subsequent successful read", async () => {

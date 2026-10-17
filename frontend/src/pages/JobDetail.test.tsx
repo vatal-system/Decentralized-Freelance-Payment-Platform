@@ -63,6 +63,7 @@ vi.mock("../lib/api", () => ({
   markMessagesRead: h.markMessagesRead,
 }));
 
+import { ContractReadError } from "../lib/errors";
 import JobDetail from "./JobDetail";
 
 const CLIENT = "GCLIENT";
@@ -247,11 +248,40 @@ describe("JobDetail actions", () => {
 });
 
 describe("JobDetail load state", () => {
-  it("explains a failed read instead of rendering an empty page", async () => {
-    h.escrow.getEscrow.mockResolvedValue(undefined);
+  it("renders the escrow for a visitor with no wallet connected", async () => {
+    // #108: a shared /jobs/:id link is a public read, so it must not wait for
+    // Freighter (or for a funded wallet) to show the job.
+    h.wallet.publicKey = null;
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
     render(<JobDetail />);
 
-    expect((await screen.findByRole("alert")).textContent).toMatch(/could not load escrow/i);
+    expect(await screen.findByText("Milestones")).toBeTruthy();
+    expect(screen.getByText("Active")).toBeTruthy();
+    // The wallet prompt stays, but only for the actions the page offers.
+    expect(screen.getByText(/to act on this job/)).toBeTruthy();
+    expect(screen.getByText(/Reading it needs no wallet/)).toBeTruthy();
+    expect(h.wallet.connect).not.toHaveBeenCalled();
+  });
+
+  it("says the job was not found instead of blaming the id", async () => {
+    h.escrow.getEscrow.mockRejectedValue(
+      new ContractReadError("not-found", "That record was not found."),
+    );
+    render(<JobDetail />);
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/check the link/);
+    expect(screen.queryByText(/is the id correct/i)).toBeNull();
+  });
+
+  it("reports a network problem as a network problem, with a retry", async () => {
+    h.escrow.getEscrow.mockRejectedValue(
+      new ContractReadError("unavailable", "Failed to fetch"),
+    );
+    render(<JobDetail />);
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Couldn't reach Stellar/);
+    expect(screen.queryByText(/check the link/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
   it("shows the error the hook surfaced", async () => {

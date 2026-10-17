@@ -79,6 +79,9 @@ services:
         VITE_USDC_CONTRACT_ID: ${VITE_USDC_CONTRACT_ID:-}
         # Enables the XLM payment option in the asset picker.
         VITE_XLM_CONTRACT_ID: ${VITE_XLM_CONTRACT_ID:-}
+        # Optional: source account for public reads. Unset uses a built-in
+        # secret-less key, so shared /jobs/:id links work without it.
+        VITE_READONLY_SOURCE: ${VITE_READONLY_SOURCE:-}
     restart: unless-stopped
     depends_on:
       - backend

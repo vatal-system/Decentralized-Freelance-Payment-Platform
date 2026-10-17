@@ -7,14 +7,17 @@
  *
  * Contributor Notes:
  * - The aggregate comes from the reputation contract (`useEscrow.getReputation`),
- *   which needs a connected wallet; the job history, rating list and transaction
- *   history come from the backend API, so they render for an unconnected visitor
- *   too.
+ *   a public view. It is simulated from the read-only source, so it renders for
+ *   an unconnected visitor too (issue #108); the job history, rating list and
+ *   transaction history come from the backend API.
  * - Job rows are merged from the client and freelancer filters (`fetchUserJobs`)
  *   and deduplicated by job id, so an address that is both parties sees one row.
  * - The transaction history is derived from indexed events, so it is the one
  *   place a client sees a consolidated record of what happened on-chain rather
  *   than one action at a time.
+ * - "No ratings yet" is only shown after the contract has actually answered: a
+ *   failed read is reported as a network/configuration problem, never as an
+ *   empty reputation.
  */
 
 import { useEffect, useState } from "react";
@@ -23,7 +26,11 @@ import Layout from "../components/Layout";
 import AddressField from "../components/AddressField";
 import StatusBadge from "../components/StatusBadge";
 import { useEscrow, type ReputationView } from "../hooks/useEscrow";
-import { useWallet } from "../hooks/wallet-context";
+import {
+  asReadError,
+  describeReadFailure,
+  type ContractReadError,
+} from "../lib/errors";
 import {
   fetchRatingsReceived,
   fetchTransactions,
@@ -38,9 +45,12 @@ import { formatDate } from "../lib/time";
 
 export default function Profile() {
   const { address } = useParams<{ address: string }>();
-  const { getReputation, isPending, error } = useEscrow();
-  const { publicKey, connect, signMessage } = useWallet();
+  const { getReputation } = useEscrow();
   const [reputation, setReputation] = useState<ReputationView | null>(null);
+  // Typed so the page can tell a bad address from an unreachable network, and
+  // never render either as "No ratings yet".
+  const [readFailure, setReadFailure] = useState<ContractReadError | null>(null);
+  const [reputationLoading, setReputationLoading] = useState(true);
 
   // `null` means "not loaded yet"; an empty array means "loaded, nothing there".
   const [jobs, setJobs] = useState<JobApi[] | null>(null);
@@ -48,8 +58,31 @@ export default function Profile() {
   const [transactions, setTransactions] = useState<TransactionApi[] | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
 
+  // The read is public, so this runs before a wallet is connected (issue #108).
   useEffect(() => {
-    if (address) void getReputation(address).then((r) => r && setReputation(r));
+    if (!address) {
+      setReputationLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setReputationLoading(true);
+    setReputation(null);
+    setReadFailure(null);
+    void getReputation(address)
+      .then((r) => {
+        if (cancelled) return;
+        setReputation(r);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setReadFailure(asReadError(e));
+      })
+      .finally(() => {
+        if (!cancelled) setReputationLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [address, getReputation]);
 
   // The viewed address, not the viewer: a profile is public, so this runs even
@@ -104,25 +137,22 @@ export default function Profile() {
         </p>
       )}
 
-      {!publicKey && (
-        <p>
-          <button onClick={() => void connect()}>Connect Freighter</button> to load
-          reputation.
+      {reputationLoading && (
+        <p role="status" aria-live="polite" className="muted">
+          Loading reputation…
         </p>
       )}
-
-      {isPending("reputation") && (
-        <p role="status" aria-live="polite">
-          Loading…
-        </p>
-      )}
-      {error && (
+      {!reputationLoading && readFailure && (
         <p role="alert" aria-live="assertive" className="alert alert-error">
-          {error}
+          {/* A bad address is a dead link; anything else is our problem, not theirs. */}
+          {readFailure.kind === "not-found"
+            ? "That address doesn't look like a Stellar account — check the link."
+            : describeReadFailure(readFailure.kind, "this reputation")}
+          {readFailure.kind === "unknown" && <> ({readFailure.message})</>}
         </p>
       )}
 
-      {reputation && (
+      {!reputationLoading && reputation && (
         <p role="status" aria-live="polite">
           {average === null ? (
             <>No ratings yet.</>

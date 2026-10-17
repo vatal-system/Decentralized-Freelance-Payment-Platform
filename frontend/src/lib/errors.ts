@@ -17,6 +17,10 @@
  * - Codes overlap between contracts (e.g. escrow `#4` is
  *   `MilestoneAlreadyReleased` but reputation `#4` is `InvalidScore`), so a few
  *   messages describe both meanings rather than guessing the contract.
+ * - Public reads get a `ReadFailureKind` on top of the message, so a page can
+ *   tell "this record does not exist" apart from "Stellar could not be
+ *   reached" instead of blaming the link for every failure. See
+ *   `classifyReadFailure`.
  */
 
 const CONTRACT_ERROR_MESSAGES: Record<number, string> = {
@@ -60,4 +64,99 @@ export function friendlyError(error: unknown): string {
     if (message) return message;
   }
   return raw;
+}
+
+// ---------------------------------------------------------------------------
+// Read failures
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a public read failed, at the level of detail a page can act on:
+ *
+ * - `not-found`   – the contract answered "no such record", or the id/address in
+ *                   the URL cannot exist at all. The link is the problem.
+ * - `unavailable` – there was no answer to read: RPC/network failure, a missing
+ *                   contract id, or an unreadable read-only source account. The
+ *                   link is fine; retrying or fixing configuration helps.
+ * - `unknown`     – the contract rejected the call for another reason (e.g. it
+ *                   is not initialized); the raw message is worth showing.
+ */
+export type ReadFailureKind = "not-found" | "unavailable" | "unknown";
+
+/** A read-only contract call that failed, carrying a machine-readable kind. */
+export class ContractReadError extends Error {
+  readonly kind: ReadFailureKind;
+
+  constructor(kind: ReadFailureKind, message: string) {
+    super(message);
+    this.name = "ContractReadError";
+    this.kind = kind;
+  }
+}
+
+/** Failures that mean "no usable answer from the network", not "bad record". */
+const UNAVAILABLE_PATTERNS = [
+  /failed to fetch/i,
+  /fetch failed/i,
+  /load failed/i,
+  /network ?error/i,
+  /timed? ?out|timeout/i,
+  /econnrefused|econnreset|enotfound|eai_again|socket hang up/i,
+  /connection (?:refused|closed|reset)/i,
+  /http (?:408|429|5\d\d)/i,
+  /not configured/i,
+  // A malformed contract id comes from a bad VITE_*_CONTRACT_ID, not a bad link.
+  /invalid contract id/i,
+];
+
+/** Failures that mean the id/address the caller asked for cannot exist. */
+const INVALID_INPUT_PATTERNS = [
+  /unsupported address type/i,
+  /invalid address/i,
+  /invalid strkey/i,
+  /invalid public key/i,
+];
+
+/**
+ * Classify a failed read without hiding it: contract codes win, then SDK input
+ * validation, then transport failures; anything else stays `unknown` so its
+ * message is surfaced verbatim.
+ */
+export function classifyReadFailure(error: unknown): ReadFailureKind {
+  if (error instanceof ContractReadError) return error.kind;
+  const raw = error instanceof Error ? error.message : String(error);
+
+  const code = parseContractErrorCode(raw);
+  if (code === 1) return "not-found";
+  // NotInitialized means this deployment cannot answer reads yet.
+  if (code === 12) return "unavailable";
+  if (code !== null) return "unknown";
+
+  if (INVALID_INPUT_PATTERNS.some((re) => re.test(raw))) return "not-found";
+  if (UNAVAILABLE_PATTERNS.some((re) => re.test(raw))) return "unavailable";
+  return "unknown";
+}
+
+/** Normalize anything a read threw into a `ContractReadError`. */
+export function asReadError(error: unknown): ContractReadError {
+  if (error instanceof ContractReadError) return error;
+  return new ContractReadError(classifyReadFailure(error), friendlyError(error));
+}
+
+/**
+ * User-facing copy for a read failure. `subject` is what could not be read,
+ * e.g. "job #12" or "this reputation".
+ */
+export function describeReadFailure(
+  kind: ReadFailureKind,
+  subject: string,
+): string {
+  switch (kind) {
+    case "not-found":
+      return `Couldn't find ${subject}. It may not exist on this network — check the link.`;
+    case "unavailable":
+      return `Couldn't reach Stellar to read ${subject}. This is a network or configuration problem, not a bad link — try again.`;
+    default:
+      return `Reading ${subject} failed for an unexpected reason.`;
+  }
 }

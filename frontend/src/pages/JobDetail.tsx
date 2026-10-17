@@ -25,6 +25,10 @@
  * - Each unreleased milestone shows its deadline and whether it has passed, so
  *   the reminder is visible where the work is released, not only on the
  *   Dashboard panel (issue #74).
+ * - Reading is public (issue #108): the escrow view is simulated from the
+ *   read-only source, so a shared /jobs/:id link renders with no wallet
+ *   connected — only release/dispute/reclaim/rate need one. A read failure is
+ *   reported as "not found" or "unavailable" rather than blaming the id.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -39,6 +43,11 @@ import { useEscrow, type EscrowView } from "../hooks/useEscrow";
 import { useWallet } from "../hooks/wallet-context";
 import { explorerTxUrl } from "../lib/stellar";
 import { assetForContractId, fromBaseUnits } from "../lib/assets";
+import {
+  asReadError,
+  describeReadFailure,
+  type ContractReadError,
+} from "../lib/errors";
 import {
   authenticate,
   createDispute,
@@ -97,7 +106,9 @@ export default function JobDetail() {
   } = useEscrow();
   const { publicKey, connect, signMessage } = useWallet();
   const [escrow, setEscrow] = useState<EscrowView | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // A failed read, kept typed so the page can tell a dead link from a dead
+  // network instead of showing "is the id correct?" for both.
+  const [readFailure, setReadFailure] = useState<ContractReadError | null>(null);
   const [lastHash, setLastHash] = useState<string | null>(null);
   // The conversation is scoped to the off-chain job id while this page is keyed
   // by the on-chain escrow id, so the two are bridged once (below) for the
@@ -143,14 +154,19 @@ export default function JobDetail() {
     if (escrowId === null) return;
     // Don't let a background poll clobber state with a read that raced a write.
     if (hasPendingWrite()) return;
-    const data = await getEscrow(escrowId);
-    if (data) {
+    try {
+      const data = await getEscrow(escrowId);
       setEscrow(data);
+      setReadFailure(null);
       // The deadline is immutable once set, but re-reading it on the poll keeps
       // the action available even if the first read raced the dispute opening.
       if (data.status === "Disputed") {
-        const deadline = await getDisputeDeadline(escrowId);
-        if (deadline !== undefined) setDisputeDeadline(deadline);
+        try {
+          setDisputeDeadline(await getDisputeDeadline(escrowId));
+        } catch {
+          // Leave the last known deadline: a failed deadline read must not
+          // replace the escrow the visitor is looking at.
+        }
       } else {
         setDisputeDeadline(null);
       }
@@ -165,7 +181,10 @@ export default function JobDetail() {
       } catch {
         // ignore
       }
-    } else setLoadError("Could not load escrow (is the id correct?)");
+    } catch (e) {
+      // Keep the last good view: one failed poll must not blank the page.
+      setReadFailure(asReadError(e));
+    }
   }, [escrowId, getEscrow, getDisputeDeadline, hasPendingWrite, loadJobDeliverables]);
 
   useEffect(() => {
@@ -216,6 +235,14 @@ export default function JobDetail() {
       setAlreadyRated(true);
     }
   }, [lastFailure]);
+
+  // What a failed read tells the visitor: a dead link and an unreachable
+  // network are different problems with different next steps.
+  const loadError = readFailure
+    ? `${describeReadFailure(readFailure.kind, `job #${id}`)}${
+        readFailure.kind === "unknown" ? ` (${readFailure.message})` : ""
+      }`
+    : null;
 
   if (escrowId === null) {
     return (
@@ -401,7 +428,7 @@ export default function JobDetail() {
       {!publicKey && (
         <p>
           <button onClick={() => void connect()}>Connect Freighter</button> to act on this
-          job.
+          job. Reading it needs no wallet.
         </p>
       )}
 
@@ -414,7 +441,7 @@ export default function JobDetail() {
             type="button"
             className="btn-retry"
             onClick={() => {
-              setLoadError(null);
+              setReadFailure(null);
               void refresh();
             }}
           >

@@ -22,6 +22,14 @@
 #               Leave unset for local development (defaults to localhost:3000);
 #               set it to the deployed backend origin before building for a
 #               hosted frontend.
+#   READONLY_SOURCE
+#             – public key of a funded account used as the simulation source for
+#               the frontend's public reads (/jobs/:id, /profile/:address).
+#               Optional: reads normally simulate from a built-in, secret-less
+#               key and need no account at all, so leave this unset unless your
+#               RPC provider rejects simulations from a source that is not on
+#               the ledger. The account is only read from, never signed with, so
+#               the public key is enough.
 #   KEEP_FRONTEND_ENV
 #             – set to 1 to keep an existing frontend/.env untouched. By default
 #               the file is regenerated (a previous one is backed up to
@@ -51,6 +59,7 @@ IDENTITY="${IDENTITY:-deployer}"
 USDC_CONTRACT_ID="${USDC_CONTRACT_ID:-}"
 XLM_CONTRACT_ID="${XLM_CONTRACT_ID:-}"
 VITE_API_URL="${VITE_API_URL:-}"
+READONLY_SOURCE="${READONLY_SOURCE:-}"
 KEEP_FRONTEND_ENV="${KEEP_FRONTEND_ENV:-}"
 
 command -v stellar >/dev/null || {
@@ -132,6 +141,7 @@ VITE_DISPUTE_CONTRACT_ID=$DISPUTE_CONTRACT_ID
 VITE_REPUTATION_CONTRACT_ID=$REPUTATION_CONTRACT_ID
 VITE_USDC_CONTRACT_ID=$USDC_CONTRACT_ID
 VITE_XLM_CONTRACT_ID=$XLM_CONTRACT_ID
+VITE_READONLY_SOURCE=$READONLY_SOURCE
 ENV
   echo "==> Wrote $FE_ENV"
 fi

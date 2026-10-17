@@ -14,9 +14,12 @@
  * - For testnet development copy .env.example → .env and fill in deployed
  *   addresses (scripts/deploy_testnet.sh writes this file for you).
  * - Never commit real secret keys; Freighter handles signing in the browser.
+ * - Reads must work with no wallet: `readContract` simulates from the read-only
+ *   source below and never touches the visitor's account (see READONLY_SOURCE).
  */
 
 import {
+  Account,
   Address,
   BASE_FEE,
   Contract,
@@ -28,6 +31,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { fromBaseUnits, toBaseUnits } from "./assets";
+import { ContractReadError, asReadError, classifyReadFailure, friendlyError } from "./errors";
 
 // ---------------------------------------------------------------------------
 // Network config
@@ -77,6 +81,37 @@ export const CONTRACT_ADDRESSES = {
 } as const;
 
 export const server = new SorobanRpc.Server(rpcUrl, { allowHttp: false });
+
+// ---------------------------------------------------------------------------
+// Read-only simulation source
+// ---------------------------------------------------------------------------
+
+/**
+ * All-zero ed25519 public key. It has no secret key and no ledger entry, and it
+ * is only ever used as a simulation source, so it cannot move funds.
+ */
+const SIMULATION_ONLY_SOURCE =
+  "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+/**
+ * Public key used as the source account for read-only simulations.
+ *
+ * A Soroban view is executed as a *simulated* transaction, and the SDK needs an
+ * `Account` (public key + sequence number) to build one. The source never signs
+ * and is never charged, so for simulation it does not need to exist on-chain —
+ * the RPC runs the contract call and returns its result. Using an all-zero,
+ * secret-less key therefore lets a shared `/jobs/:id` or `/profile/:address`
+ * link render in a fresh browser with no wallet, no extension and no funded
+ * account; the sequence number is irrelevant to simulation and is never
+ * submitted anywhere.
+ *
+ * Set `VITE_READONLY_SOURCE` to a funded public key if the RPC provider you use
+ * rejects simulations whose source account is absent from the ledger. It is then
+ * loaded with `getAccount` so the simulation uses its real sequence number.
+ * Either way the account is only read from, never signed with.
+ */
+export const READONLY_SOURCE: string =
+  import.meta.env.VITE_READONLY_SOURCE || SIMULATION_ONLY_SOURCE;
 
 // ---------------------------------------------------------------------------
 // ScVal helpers
@@ -158,9 +193,74 @@ function simulationError(
   return null;
 }
 
+/** The source account a read-only call simulates from (never signs, never pays). */
+async function readSourceAccount(): Promise<Account> {
+  if (READONLY_SOURCE === SIMULATION_ONLY_SOURCE) return new Account(READONLY_SOURCE, "0");
+
+  try {
+    return await server.getAccount(READONLY_SOURCE);
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new ContractReadError(
+      "unavailable",
+      `The configured read-only source account (${READONLY_SOURCE}) could not be loaded: ${detail}`,
+    );
+  }
+}
+
 /**
- * Build a contract call, simulate it to get the footprint + fees, and return
- * the assembled XDR plus the simulated return value.
+ * Build and simulate a contract call from `account`, returning the transaction
+ * (for assembly) and the decoded return value.
+ *
+ * Every failure mode is normalized to `ContractReadError`, so callers can tell
+ * "not found" from "unavailable" instead of re-parsing host strings.
+ */
+async function simulateContractCall(
+  account: Account,
+  contractId: string,
+  method: string,
+  args: xdr.ScVal[],
+): Promise<{
+  tx: ReturnType<TransactionBuilder["build"]>;
+  sim: SorobanRpc.Api.SimulateTransactionSuccessResponse;
+  result: unknown;
+}> {
+  if (!contractId) {
+    throw new ContractReadError(
+      "unavailable",
+      "This contract address is not configured (.env)",
+    );
+  }
+
+  const contract = new Contract(contractId);
+  const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase })
+    .addOperation(contract.call(method, ...args))
+    .setTimeout(60)
+    .build();
+
+  let sim: SorobanRpc.Api.SimulateTransactionResponse;
+  try {
+    sim = await server.simulateTransaction(tx);
+  } catch (e) {
+    // Transport failure (offline, DNS, RPC 5xx): no answer was received.
+    throw asReadError(e);
+  }
+
+  const err = simulationError(sim);
+  if (err) throw new ContractReadError(classifyReadFailure(err), friendlyError(err));
+
+  const success = sim as SorobanRpc.Api.SimulateTransactionSuccessResponse;
+  const result = success.result?.retval ? scValToNative(success.result.retval) : undefined;
+  return { tx, sim: success, result };
+}
+
+/**
+ * Build a contract call for a **write**, simulate it to get the footprint +
+ * fees, and return the assembled XDR plus the simulated return value.
+ *
+ * Writes are paid for by the user, so this loads their real account: an
+ * unfunded account cannot submit, and the read-only source must never sign.
+ * Public reads use `readContract` instead.
  */
 export async function buildContractCall(
   sourcePublicKey: string,
@@ -168,35 +268,26 @@ export async function buildContractCall(
   method: string,
   args: xdr.ScVal[],
 ): Promise<BuiltTransaction> {
-  if (!contractId) throw new Error("Contract address is not configured (.env)");
-
   const account = await server.getAccount(sourcePublicKey);
-  const contract = new Contract(contractId);
-
-  const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase })
-    .addOperation(contract.call(method, ...args))
-    .setTimeout(60)
-    .build();
-
-  const sim = await server.simulateTransaction(tx);
-  const err = simulationError(sim);
-  if (err) throw new Error(err);
-
-  const success = sim as SorobanRpc.Api.SimulateTransactionSuccessResponse;
-  const result = success.result?.retval ? scValToNative(success.result.retval) : undefined;
+  const { tx, sim, result } = await simulateContractCall(account, contractId, method, args);
   const assembled = SorobanRpc.assembleTransaction(tx, sim).build();
 
   return { xdr: assembled.toXDR(), result };
 }
 
-/** Read-only call: simulate and return the decoded result, no signing. */
+/**
+ * Read-only call: simulate from the read-only source, decode the result. No
+ * signing, no wallet, no account lookup — a shared link renders for a visitor.
+ *
+ * Rejects with `ContractReadError` (`kind` = not-found | unavailable | unknown).
+ */
 export async function readContract<T>(
-  sourcePublicKey: string,
   contractId: string,
   method: string,
   args: xdr.ScVal[],
 ): Promise<T> {
-  const { result } = await buildContractCall(sourcePublicKey, contractId, method, args);
+  const account = await readSourceAccount();
+  const { result } = await simulateContractCall(account, contractId, method, args);
   return result as T;
 }
 

@@ -5,7 +5,10 @@
  *
  * Every write follows the same pipeline (see lib/stellar.ts):
  *   build → simulate → assemble → sign (Freighter) → submit → poll
- * Reads are signed-free: build → simulate → decode the return value.
+ * Reads are signed-free *and wallet-free*: they simulate from the read-only
+ * source in lib/stellar.ts, so a shared /jobs/:id or /profile/:address link
+ * renders before anyone connects. They reject with a `ContractReadError` whose
+ * `kind` separates "not found" from "unavailable" (issue #108).
  *
  * Contributor Notes:
  * - Amounts are i128 stroops (7 decimals). Use `toStroops`/`fromStroops`.
@@ -16,6 +19,8 @@
  * - Every write reports its lifecycle through `useToasts` (building → signing →
  *   confirmed / failed) so feedback survives navigation, and a failure carries
  *   the same mapped contract-error message the inline error shows (issue #60).
+ * - A read must never go through `run()`: that helper calls `connect()`. Reads
+ *   use `runRead()`, which needs no wallet and never toasts.
  */
 
 import { useCallback, useRef, useState } from "react";
@@ -34,7 +39,7 @@ import {
   server,
   type MilestoneInput,
 } from "../lib/stellar";
-import { friendlyError, parseContractErrorCode } from "../lib/errors";
+import { asReadError, friendlyError, parseContractErrorCode } from "../lib/errors";
 import { useToasts } from "./toast-context";
 import { useWallet } from "./wallet-context";
 
@@ -85,17 +90,32 @@ export interface OpenDisputeResult {
   disputeId: bigint;
 }
 
-/** The kinds of operation the hook can have in flight. */
-export type OpKind =
-  | "create"
-  | "release"
-  | "dispute"
-  | "reclaim"
-  | "read"
-  | "reputation"
-  | "rate";
+/**
+ * The kinds of state-changing operation the hook can have in flight. Reads are
+ * not here: they are public, so they are not tracked as an operation and never
+ * gate a background poll.
+ */
+export type OpKind = "create" | "release" | "dispute" | "reclaim" | "rate";
 
 const WRITE_KINDS: OpKind[] = ["create", "release", "dispute", "reclaim", "rate"];
+
+/**
+ * `scValToNative` decodes the escrow's unit-enum `status` as a one-element array
+ * (`["Active"]`), while `EscrowView` promises a string and every caller compares
+ * it to one. Left unwrapped, the page's status badge and action gating
+ * (`status === "Active"`) silently never match a real, on-chain escrow, so a
+ * live client would never see the Release button.
+ *
+ * Normalizing at the read boundary keeps the view honest for every consumer,
+ * and tolerates a string from an already-normalized source.
+ */
+export function normalizeEscrowView(view: EscrowView): EscrowView {
+  const status: unknown = view.status;
+  if (Array.isArray(status) && status.length === 1 && typeof status[0] === "string") {
+    return { ...view, status: status[0] };
+  }
+  return view;
+}
 
 /**
  * The last operation that failed, so a caller can react to a specific contract
@@ -170,6 +190,24 @@ export function useEscrow() {
     () => [...pendingRef.current].some((id) => WRITE_KINDS.some((k) => id.startsWith(`${k}:`))),
     [],
   );
+
+  /**
+   * Run a public read. `escrow.get`, `escrow.dispute_deadline` and
+   * `reputation.get_aggregate` are open views: they need no wallet, so this
+   * bypasses `run()` and its `connect()` call entirely.
+   *
+   * Failures are normalized to `ContractReadError` and left to the caller — each
+   * page renders its own not-found/unavailable state — and stale write errors are
+   * cleared, because a read succeeding proves the network is reachable.
+   */
+  const runRead = useCallback(async <T,>(fn: () => Promise<T>): Promise<T> => {
+    setError(null);
+    try {
+      return await fn();
+    } catch (e) {
+      throw asReadError(e);
+    }
+  }, []);
 
   /**
    * Submit a state-changing contract call. Returns the transaction hash and the
@@ -332,40 +370,42 @@ export function useEscrow() {
     [run, submit],
   );
 
-  /** Read a single escrow (view). */
+  /** Read a single escrow (view). No wallet needed; rejects with a typed error. */
   const getEscrow = useCallback(
     (escrowId: bigint) =>
-      run("read", `${escrowId}`, (pk) =>
-        readContract<EscrowView>(pk, CONTRACT_ADDRESSES.escrow, "get", [scU64(escrowId)]),
+      runRead(async () =>
+        normalizeEscrowView(
+          await readContract<EscrowView>(CONTRACT_ADDRESSES.escrow, "get", [scU64(escrowId)]),
+        ),
       ),
-    [run],
+    [runRead],
   );
 
   /**
    * Read the dispute timelock deadline (unix seconds) for an escrow (view).
    *
    * Set when `open_dispute` runs; the client may reclaim once the ledger clock
-   * is past it. Returns `NotInitialized` for an escrow that never opened one.
+   * is past it. Rejects (`unknown`) for an escrow that never opened one.
    */
   const getDisputeDeadline = useCallback(
     (escrowId: bigint) =>
-      run("read", `deadline:${escrowId}`, (pk) =>
-        readContract<bigint>(pk, CONTRACT_ADDRESSES.escrow, "dispute_deadline", [
+      runRead(() =>
+        readContract<bigint>(CONTRACT_ADDRESSES.escrow, "dispute_deadline", [
           scU64(escrowId),
         ]),
       ),
-    [run],
+    [runRead],
   );
 
-  /** Read a user's reputation aggregate (view). */
+  /** Read a user's reputation aggregate (view). No wallet needed. */
   const getReputation = useCallback(
     (address: string) =>
-      run("reputation", address, (pk) =>
-        readContract<ReputationView>(pk, CONTRACT_ADDRESSES.reputation, "get_aggregate", [
+      runRead(() =>
+        readContract<ReputationView>(CONTRACT_ADDRESSES.reputation, "get_aggregate", [
           scAddress(address),
         ]),
       ),
-    [run],
+    [runRead],
   );
 
   return {

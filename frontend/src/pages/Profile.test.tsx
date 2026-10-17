@@ -51,6 +51,7 @@ vi.mock("../lib/api", () => ({
   fetchTransactions: h.api.fetchTransactions,
 }));
 
+import { ContractReadError } from "../lib/errors";
 import Profile from "./Profile";
 import type { JobApi, ReceivedRatingApi, TransactionApi } from "../lib/api";
 
@@ -103,9 +104,9 @@ function transaction(overrides: Partial<TransactionApi> = {}): TransactionApi {
 
 beforeEach(() => {
   h.escrow.getReputation.mockReset();
-  // `useEscrow.run` is async, so a real read always resolves — to `undefined`
-  // when it fails (the error is surfaced on the hook, not thrown).
-  h.escrow.getReputation.mockResolvedValue(undefined);
+  // A public read resolves to the contract's aggregate, or rejects with a typed
+  // `ContractReadError` (it is never a silent `undefined`).
+  h.escrow.getReputation.mockResolvedValue({ total_score: 0n, weight: 0n, count: 0n });
   h.escrow.isPending.mockReset();
   h.escrow.isPending.mockReturnValue(false);
   h.escrow.error = null;
@@ -149,35 +150,52 @@ describe("Profile reputation", () => {
   });
 
   it("shows a loading state while the read is in flight", async () => {
-    h.escrow.isPending.mockReturnValue(true);
     h.escrow.getReputation.mockImplementation(() => new Promise(() => {}));
 
     render(<Profile />);
 
-    expect(screen.getByText("Loading…")).toBeTruthy();
-  });
-
-  it("reports a failed read instead of claiming the address has no ratings", async () => {
-    // The read rejects inside the hook, which sets `error` and resolves the call
-    // with `undefined`; the page must not read that as "no ratings yet".
-    h.escrow.error = "Could not reach the network.";
-
-    render(<Profile />);
-
-    expect((await screen.findByRole("alert")).textContent).toBe("Could not reach the network.");
+    expect(screen.getByText("Loading reputation…")).toBeTruthy();
     expect(screen.queryByText("No ratings yet.")).toBeNull();
   });
 
-  it("offers to connect a wallet but still shows the address", async () => {
-    // A profile is public: the address renders before any wallet exists (#108
-    // covers reading the aggregate without connecting).
-    h.wallet.publicKey = null;
+  it("reports a failed read instead of claiming the address has no ratings", async () => {
+    h.escrow.getReputation.mockRejectedValue(
+      new ContractReadError("unavailable", "Failed to fetch"),
+    );
+
     render(<Profile />);
 
-    // The address is public: it does not take a wallet to look someone up.
+    expect((await screen.findByRole("alert")).textContent).toMatch(
+      /Couldn't reach Stellar/,
+    );
+    expect(screen.queryByText("No ratings yet.")).toBeNull();
+  });
+
+  it("calls an address that cannot exist a bad link, not an empty profile", async () => {
+    h.escrow.getReputation.mockRejectedValue(
+      new ContractReadError("not-found", "Unsupported address type: nope"),
+    );
+
+    render(<Profile />);
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(
+      /doesn't look like a Stellar account/,
+    );
+    expect(screen.queryByText("No ratings yet.")).toBeNull();
+  });
+
+  it("reads the aggregate with no wallet connected (issue #108)", async () => {
+    // A profile is public: neither the address nor the aggregate waits for a
+    // wallet, and the page no longer nags the visitor to connect one.
+    h.wallet.publicKey = null;
+    h.escrow.getReputation.mockResolvedValue({ total_score: 9n, weight: 2n, count: 2n });
+
+    render(<Profile />);
+
+    expect(await summary("Rating: 4.50 / 5 from 2 review(s)")).toBeTruthy();
     expect(screen.getByText(ADDRESS)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Connect Freighter" }));
-    await waitFor(() => expect(h.wallet.connect).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "Connect Freighter" })).toBeNull();
+    expect(h.wallet.connect).not.toHaveBeenCalled();
   });
 
   it("does not render notification preferences if the connected wallet is not the profile owner", () => {
