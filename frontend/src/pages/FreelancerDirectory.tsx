@@ -11,6 +11,8 @@ import { Link } from "react-router-dom";
 import Layout from "../components/Layout";
 import AddressField from "../components/AddressField";
 import { fetchFreelancers, type FreelancerApi } from "../lib/api";
+import { copyText } from "../lib/clipboard";
+import { buildJobInvitePath, buildJobInviteUrl } from "../lib/invite";
 
 const PAGE_SIZE = 10;
 
@@ -18,6 +20,7 @@ export default function FreelancerDirectory() {
   const [freelancers, setFreelancers] = useState<FreelancerApi[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copiedInviteFor, setCopiedInviteFor] = useState<string | null>(null);
 
   const [searchInput, setSearchInput] = useState("");
   const [activeSearch, setActiveSearch] = useState("");
@@ -246,11 +249,41 @@ export default function FreelancerDirectory() {
                   style={{
                     display: "flex",
                     justifyContent: "flex-end",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: "0.5rem",
                     marginTop: "0.5rem",
                     borderTop: "1px solid var(--border)",
                     paddingTop: "0.5rem",
                   }}
                 >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = buildJobInviteUrl({
+                        freelancer: freelancer.stellarAddress,
+                      });
+                      void copyText(url).then((ok) => {
+                        if (ok) setCopiedInviteFor(freelancer.stellarAddress);
+                      });
+                    }}
+                  >
+                    {copiedInviteFor === freelancer.stellarAddress
+                      ? "Invite Link Copied!"
+                      : "Copy Invite Link"}
+                  </button>
+                  <Link
+                    to={buildJobInvitePath({ freelancer: freelancer.stellarAddress })}
+                    style={{
+                      textDecoration: "none",
+                      padding: "0.35rem 0.75rem",
+                      fontSize: "0.9rem",
+                      borderRadius: "var(--radius)",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    Hire on Job →
+                  </Link>
                   <Link
                     to={`/profile/${freelancer.stellarAddress}`}
                     className="btn-primary"

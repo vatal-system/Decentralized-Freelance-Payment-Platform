@@ -1,3 +1,4 @@
+import { Keypair } from "@stellar/stellar-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MAX_JOB_TAGS, SKILL_TAGS } from "../lib/tags";
@@ -62,6 +63,7 @@ async function renderWithEnv(env: Record<string, string>): Promise<void> {
 beforeEach(() => {
   // The page persists its draft in localStorage; each test must start blank.
   localStorage.clear();
+  window.history.pushState({}, "", "/post");
   h.wallet.publicKey = "GCLIENT";
   h.escrow.isPending.mockReturnValue(false);
   h.escrow.error = null;
@@ -70,6 +72,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  window.history.pushState({}, "", "/post");
   vi.unstubAllEnvs();
 });
 
@@ -187,5 +190,60 @@ describe("PostJob total", () => {
 
   it("ignores empty amounts while the form is being filled in", async () => {
     expect(await renderTotal(["0.2", ""])).toContain("0.2");
+  });
+});
+
+describe("PostJob freelancer invite link (#80)", () => {
+  it("pre-fills the freelancer address and title from an invite query string", async () => {
+    const invitedFreelancer = Keypair.random().publicKey();
+    window.history.pushState(
+      {},
+      "",
+      `/post?freelancer=${invitedFreelancer}&title=Soroban+Audit`,
+    );
+
+    await renderWithEnv({ VITE_XLM_CONTRACT_ID: "CXLM" });
+
+    const freelancerInput = screen.getByLabelText(
+      /Freelancer Stellar address/i,
+    ) as HTMLInputElement;
+    const titleInput = screen.getByLabelText(/Title/i) as HTMLInputElement;
+    expect(freelancerInput.value).toBe(invitedFreelancer);
+    expect(titleInput.value).toBe("Soroban Audit");
+  });
+
+  it("generates a shareable invite link that encodes the entered freelancer address", async () => {
+    const targetFreelancer = Keypair.random().publicKey();
+    await renderWithEnv({ VITE_XLM_CONTRACT_ID: "CXLM" });
+
+    const generateBtn = screen.getByRole("button", {
+      name: /Generate Freelancer Invite Link/i,
+    }) as HTMLButtonElement;
+    expect(generateBtn.disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText(/Freelancer Stellar address/i), {
+      target: { value: targetFreelancer },
+    });
+    fireEvent.change(screen.getByLabelText(/Title/i), {
+      target: { value: "Frontend Integration" },
+    });
+
+    expect(generateBtn.disabled).toBe(false);
+    fireEvent.click(generateBtn);
+
+    const urlNode = await screen.findByTestId("generated-invite-url");
+    expect(urlNode.textContent).toContain(`/post?freelancer=${targetFreelancer}`);
+    expect(urlNode.textContent).toContain("title=Frontend+Integration");
+  });
+
+  it("warns without pre-filling when ?freelancer= is not a valid Stellar G-address", async () => {
+    window.history.pushState({}, "", "/post?freelancer=NOT_A_STELLAR_KEY");
+    await renderWithEnv({ VITE_XLM_CONTRACT_ID: "CXLM" });
+
+    const freelancerInput = screen.getByLabelText(
+      /Freelancer Stellar address/i,
+    ) as HTMLInputElement;
+    expect(freelancerInput.value).toBe("");
+    expect(screen.getByText(/invalid Stellar address/i)).toBeTruthy();
   });
 });

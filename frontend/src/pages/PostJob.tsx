@@ -29,6 +29,12 @@ import { ASSETS, formatAmount, getAsset, toBaseUnits } from "../lib/assets";
 import { authenticate, createJob, linkEscrowId } from "../lib/api";
 import { MAX_JOB_TAGS, tagsByCategory } from "../lib/tags";
 import { CONTRACT_ADDRESSES, explorerTxUrl } from "../lib/stellar";
+import { copyText } from "../lib/clipboard";
+import {
+  buildJobInviteUrl,
+  isValidStellarAccount,
+  parseJobInviteSearch,
+} from "../lib/invite";
 import {
   deleteTemplate,
   listTemplates,
@@ -106,11 +112,21 @@ export default function PostJob() {
   };
 
   const draft = loadDraft();
+  const initialInvite = parseJobInviteSearch();
+  const invitedAsset = initialInvite.asset
+    ? ASSETS.find((a) => a.symbol === initialInvite.asset && a.contractId)
+    : undefined;
 
-  const [title, setTitle] = useState(draft.title);
+  const [title, setTitle] = useState(initialInvite.title ?? draft.title);
   const [description, setDescription] = useState(draft.description);
-  const [freelancer, setFreelancer] = useState(draft.freelancer);
-  const [assetSymbol, setAssetSymbol] = useState(draft.assetSymbol);
+  const [freelancer, setFreelancer] = useState(
+    initialInvite.freelancer ?? draft.freelancer,
+  );
+  const [assetSymbol, setAssetSymbol] = useState(
+    invitedAsset?.symbol ?? draft.assetSymbol,
+  );
+  const [inviteStatus, setInviteStatus] = useState<string | null>(null);
+  const [generatedInviteUrl, setGeneratedInviteUrl] = useState<string | null>(null);
   const [expiryDays, setExpiryDays] = useState(draft.expiryDays);
   const [selectedTags, setSelectedTags] = useState<string[]>(draft.selectedTags);
   const [rows, setRows] = useState<MilestoneRow[]>(draft.rows);
@@ -369,6 +385,13 @@ export default function PostJob() {
           <code>VITE_{asset.symbol}_CONTRACT_ID</code> in <code>.env</code>.
         </p>
       )}
+      {initialInvite.invalidFreelancer && (
+        <p role="alert" className="alert alert-error">
+          Invite link contained an invalid Stellar address (
+          <code>{initialInvite.invalidFreelancer}</code>). Please verify the freelancer
+          address before submitting.
+        </p>
+      )}
 
       <form onSubmit={handleSubmit}>
         <p>
@@ -466,12 +489,75 @@ export default function PostJob() {
               id="post-job-freelancer"
               className="form-control"
               value={freelancer}
-              onChange={(e) => setFreelancer(e.target.value)}
+              onChange={(e) => {
+                setFreelancer(e.target.value);
+                setInviteStatus(null);
+              }}
               placeholder="G..."
               required
             />
           </label>
         </p>
+
+        <div className="invite-link-tools" style={{ marginBottom: "1rem" }}>
+          <button
+            type="button"
+            disabled={!isValidStellarAccount(freelancer)}
+            onClick={() => {
+              const url = buildJobInviteUrl({
+                freelancer: freelancer.trim(),
+                ...(title.trim() ? { title: title.trim() } : {}),
+                ...(asset.symbol ? { asset: asset.symbol } : {}),
+              });
+              setGeneratedInviteUrl(url);
+              void copyText(url).then((copied) => {
+                setInviteStatus(
+                  copied
+                    ? "Copied pre-filled freelancer invite link to clipboard."
+                    : "Generated freelancer invite link below.",
+                );
+              });
+            }}
+          >
+            Generate Freelancer Invite Link
+          </button>
+          {initialInvite.inviteRequest && publicKey && isValidStellarAccount(publicKey) && (
+            <>
+              {" "}
+              <button
+                type="button"
+                onClick={() => {
+                  setFreelancer(publicKey);
+                  const url = buildJobInviteUrl({
+                    freelancer: publicKey,
+                    ...(title.trim() ? { title: title.trim() } : {}),
+                    ...(asset.symbol ? { asset: asset.symbol } : {}),
+                  });
+                  setGeneratedInviteUrl(url);
+                  void copyText(url).then((copied) => {
+                    setInviteStatus(
+                      copied
+                        ? "Pre-filled your connected address and copied return link."
+                        : "Pre-filled your connected address.",
+                    );
+                  });
+                }}
+              >
+                Use Connected Wallet as Freelancer
+              </button>
+            </>
+          )}
+          {generatedInviteUrl && (
+            <p className="muted" style={{ marginTop: "0.4rem", wordBreak: "break-all" }}>
+              Invite URL: <code data-testid="generated-invite-url">{generatedInviteUrl}</code>
+            </p>
+          )}
+          {inviteStatus && (
+            <p role="status" aria-live="polite" className="muted" style={{ marginTop: "0.25rem" }}>
+              {inviteStatus}
+            </p>
+          )}
+        </div>
 
         <fieldset>
           <legend>Templates</legend>

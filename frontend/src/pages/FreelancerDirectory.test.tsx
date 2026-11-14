@@ -122,6 +122,12 @@ describe("FreelancerDirectory component (#68)", () => {
     expect(links[2].getAttribute("href")).toBe(
       `/profile/${mockFreelancers[2].stellarAddress}`,
     );
+
+    const hireLinks = screen.getAllByRole("link", { name: /hire on job/i });
+    expect(hireLinks).toHaveLength(3);
+    expect(hireLinks[0].getAttribute("href")).toBe(
+      `/post?freelancer=${mockFreelancers[0].stellarAddress}`,
+    );
   });
 
   it("allows sorting by reputation score and completed jobs", async () => {

@@ -46,6 +46,8 @@ import {
   type UserProfileApi,
 } from "../lib/api";
 import { actionLabel } from "../lib/activity";
+import { copyText } from "../lib/clipboard";
+import { buildJobInvitePath, buildJobInviteUrl, isValidStellarAccount } from "../lib/invite";
 import { explorerTxUrl } from "../lib/stellar";
 import { formatDate } from "../lib/time";
 
@@ -79,6 +81,7 @@ export default function Profile() {
     "idle" | "loading" | "saving" | "saved" | "error"
   >("idle");
   const [prefMessage, setPrefMessage] = useState<string | null>(null);
+  const [inviteCopied, setInviteCopied] = useState(false);
 
   // The read is public, so this runs before a wallet is connected (issue #108).
   useEffect(() => {
@@ -210,9 +213,29 @@ export default function Profile() {
     <Layout>
       <h1>Profile</h1>
       {address && (
-        <p>
-          Address: <AddressField address={address} label="profile address" qr />
-        </p>
+        <div>
+          <p>
+            Address: <AddressField address={address} label="profile address" qr />
+          </p>
+          {isValidStellarAccount(address) && (
+            <p style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+              <Link to={buildJobInvitePath({ freelancer: address })}>
+                Post job with this freelancer →
+              </Link>
+              <button
+                type="button"
+                onClick={() => {
+                  const url = buildJobInviteUrl({ freelancer: address });
+                  void copyText(url).then((ok) => {
+                    if (ok) setInviteCopied(true);
+                  });
+                }}
+              >
+                {inviteCopied ? "Job Invite Link Copied!" : "Copy Job Invite Link"}
+              </button>
+            </p>
+          )}
+        </div>
       )}
 
       {reputationLoading && (
