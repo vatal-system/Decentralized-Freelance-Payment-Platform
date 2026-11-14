@@ -594,3 +594,125 @@ svg {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+
+/* --- Wallet picker modal (issue #79) ------------------------------------ */
+
+.wallet-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 900;
+}
+
+.wallet-modal {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: 100%;
+  max-width: 32rem;
+  padding: 1.25rem;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
+}
+
+.wallet-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.wallet-modal-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.wallet-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.wallet-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.wallet-option-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1 1 14rem;
+}
+
+.wallet-option-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.wallet-option-desc {
+  font-size: 0.85rem;
+}
+
+.wallet-option-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.wallet-install-link {
+  font-size: 0.85rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.wallet-install-link:hover {
+  text-decoration: underline;
+}
+
+.wallet-status {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.wallet-status-detected {
+  background: var(--badge-active-bg);
+  color: var(--badge-active-text);
+  border: 1px solid var(--badge-active-border);
+}
+
+.wallet-status-missing {
+  background: var(--badge-created-bg);
+  color: var(--badge-created-text);
+  border: 1px solid var(--badge-created-border);
+}
+
+.wallet-provider-pill {
+  display: inline-block;
+  margin-right: 0.4rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: var(--badge-completed-bg);
+  color: var(--badge-completed-text);
+  border: 1px solid var(--badge-completed-border);
+}

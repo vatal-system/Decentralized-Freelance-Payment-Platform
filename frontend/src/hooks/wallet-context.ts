@@ -4,48 +4,41 @@
  * Wallet context object + hook, kept separate from the provider component so
  * Fast Refresh works when editing the provider.
  *
- * Freighter injects an API object into the page. Depending on the version this
- * is either `window.freighterApi` (current) or `window.freighter` (legacy); we
- * support both so the app works without pinning a specific extension build.
- *
- * No private keys ever touch this code; Freighter signs in its own context.
+ * Supports multiple browser-injected Stellar wallet adapters (Freighter, xBull,
+ * LOBSTR Signer, and Rabet — see `lib/wallets.ts`, issue #79). No private keys
+ * ever touch this code; each wallet signs in its own extension context.
  */
 
 import { createContext, useContext } from "react";
+import {
+  freighter,
+  type FreighterApi,
+  type WalletProviderId,
+} from "../lib/wallets";
 
-export interface FreighterApi {
-  getPublicKey(): Promise<string>;
-  signTransaction(
-    xdr: string,
-    opts?: { networkPassphrase?: string; address?: string },
-  ): Promise<string>;
-  /** SEP-53 message signing. Newer versions return an object, older a string. */
-  signMessage?(
-    message: string,
-    opts?: { address?: string },
-  ): Promise<{ signature: string } | string>;
-  /** Get the network details from Freighter */
-  getNetwork?(): Promise<{ network: string; networkPassphrase: string }>;
-}
-
-declare global {
-  interface Window {
-    freighter?: FreighterApi;
-    freighterApi?: FreighterApi;
-  }
-}
-
-export function freighter(): FreighterApi | undefined {
-  if (typeof window === "undefined") return undefined;
-  return window.freighterApi ?? window.freighter;
-}
+export { freighter, type FreighterApi, type WalletProviderId };
 
 export interface WalletContextValue {
   publicKey: string | null;
   connecting: boolean;
   error: string | null;
   networkMismatch: boolean;
-  connect: () => Promise<string | null>;
+  /** Active wallet adapter id once connected (issue #79). */
+  providerId?: WalletProviderId | null;
+  /** Human-readable name of the connected wallet provider (issue #79). */
+  providerName?: string | null;
+  /** Whether the wallet selection dialog is currently open (issue #79). */
+  pickerOpen?: boolean;
+  /**
+   * Connect a wallet. When called with a `providerId`, connects directly with
+   * that adapter; when called with no argument, opens the wallet picker and
+   * resolves once a provider connects (or `null` if cancelled).
+   */
+  connect: (providerId?: WalletProviderId) => Promise<string | null>;
+  /** Open the wallet picker modal without awaiting a connection. */
+  openPicker?: () => void;
+  /** Dismiss the wallet picker modal. */
+  closePicker?: () => void;
   disconnect: () => void;
   sign: (xdr: string) => Promise<string>;
   /** Sign a message per SEP-53; returns the base64 signature. */

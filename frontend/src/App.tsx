@@ -30,7 +30,7 @@ import FreelancerDirectory from "./pages/FreelancerDirectory";
 import NotFound from "./pages/NotFound";
 
 function Nav() {
-  const { publicKey, connecting, connect, disconnect } = useWallet();
+  const { publicKey, providerName, connecting, connect, disconnect } = useWallet();
   return (
     <nav className="nav" aria-label="Main navigation">
       <Link to="/" className="nav-brand" aria-label="Stellar Freelance Platform Home">
@@ -43,12 +43,17 @@ function Nav() {
         {publicKey ? (
           <>
             <NotificationsBell />
+            {providerName && (
+              <span className="wallet-provider-pill" title={`Connected via ${providerName}`}>
+                {providerName}
+              </span>
+            )}
             <AddressField address={publicKey} truncate />{" "}
             <button onClick={disconnect}>Disconnect</button>
           </>
         ) : (
           <button onClick={() => void connect()} disabled={connecting}>
-            {connecting ? "Connecting…" : "Connect Freighter"}
+            {connecting ? "Connecting…" : "Connect Wallet"}
           </button>
         )}
       </span>
@@ -57,7 +62,7 @@ function Nav() {
 }
 
 function NetworkMismatchBanner() {
-  const { publicKey, networkMismatch } = useWallet();
+  const { publicKey, providerName, networkMismatch } = useWallet();
 
   if (!publicKey || !networkMismatch) return null;
 
@@ -75,7 +80,8 @@ function NetworkMismatchBanner() {
         textAlign: "center",
       }}
     >
-      Freighter is connected to a different network. Please switch to {networkName} in your wallet.
+      {providerName ?? "Your wallet"} is connected to a different network. Please switch to{" "}
+      {networkName} in your wallet.
     </div>
   );
 }
