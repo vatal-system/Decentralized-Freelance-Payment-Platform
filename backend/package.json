@@ -46,7 +46,7 @@
     "globals": "^15.15.0",
     "prisma": "5.15.0",
     "tsx": "4.15.6",
-    "typescript": "5.4.5",
+    "typescript": "7.0.2",
     "typescript-eslint": "^8.71.2",
     "vitest": "1.6.0"
   },
