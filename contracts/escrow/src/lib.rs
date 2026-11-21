@@ -748,11 +748,8 @@ impl EscrowContract {
             return Err(EscrowError::InvalidStatus);
         }
 
-        let deadline: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::DisputeDeadline(escrow_id))
-            .ok_or(EscrowError::NotInitialized)?;
+        let deadline =
+            Self::load_dispute_deadline(&env, escrow_id).ok_or(EscrowError::NotInitialized)?;
         if env.ledger().timestamp() <= deadline {
             return Err(EscrowError::DisputeTimeoutNotReached);
         }
@@ -894,11 +891,13 @@ impl EscrowContract {
     }
 
     /// Read the dispute timelock deadline for an escrow (view).
+    ///
+    /// Refreshes the entry's TTL as it reads it: the deadline is written only
+    /// once, in `open_dispute`, so a dispute that stays open while it is only
+    /// queried would let the entry archive and strand the client's timelock
+    /// escape hatch (`reclaim_after_dispute_timeout`).
     pub fn dispute_deadline(env: Env, escrow_id: u64) -> Result<u64, EscrowError> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::DisputeDeadline(escrow_id))
-            .ok_or(EscrowError::NotFound)
+        Self::load_dispute_deadline(&env, escrow_id).ok_or(EscrowError::NotFound)
     }
 
     /// Read the configured dispute contract (view).
@@ -971,6 +970,21 @@ impl EscrowContract {
             total = total.checked_add(unpaid).ok_or(EscrowError::Overflow)?;
         }
         Ok(total)
+    }
+
+    /// Read `DataKey::DisputeDeadline(id)`, refreshing its TTL when present.
+    ///
+    /// `extend_ttl` is skipped for missing entries instead of being called
+    /// blindly, so callers may read before a dispute is ever opened.
+    fn load_dispute_deadline(env: &Env, id: u64) -> Option<u64> {
+        let key = DataKey::DisputeDeadline(id);
+        let deadline: Option<u64> = env.storage().persistent().get(&key);
+        if deadline.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        }
+        deadline
     }
 
     fn load(env: &Env, id: u64) -> Result<EscrowData, EscrowError> {

@@ -13,11 +13,11 @@
 extern crate std;
 
 use crate::{
-    EscrowContract, EscrowContractClient, EscrowError, EscrowStatus, Milestone,
-    DISPUTE_CONTRACT_TIMELOCK_SECONDS,
+    DataKey, EscrowContract, EscrowContractClient, EscrowError, EscrowStatus, Milestone,
+    DISPUTE_CONTRACT_TIMELOCK_SECONDS, TTL_EXTEND_TO, TTL_THRESHOLD,
 };
 use soroban_sdk::{
-    testutils::{Address as _, Events as _, Ledger},
+    testutils::{storage::Persistent as _, Address as _, Events as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     xdr::{self, Limits, ReadXdr},
     Address, BytesN, Env, Map, Symbol, TryFromVal, Val, Vec,
@@ -1144,6 +1144,78 @@ fn reclaim_after_dispute_timeout_requires_client_auth() {
     f.env.ledger().set_timestamp(deadline + 1);
     f.env.set_auths(&[]);
     f.c().reclaim_after_dispute_timeout(&id);
+}
+
+// ---------------------------------------------------------------------------
+// dispute deadline TTL
+// ---------------------------------------------------------------------------
+
+/// TTL of `key` in the escrow contract's persistent storage.
+fn deadline_ttl(f: &Fixture, key: &DataKey) -> u32 {
+    f.env
+        .as_contract(&f.escrow, || f.env.storage().persistent().get_ttl(key))
+}
+
+/// Move the ledger forward until `key`'s TTL sits below the refresh threshold,
+/// leaving it still live. Returns the reduced TTL.
+fn age_below_ttl_threshold(f: &Fixture, key: &DataKey) -> u32 {
+    let ttl = deadline_ttl(f, key);
+    assert!(ttl > TTL_THRESHOLD, "entry should start with TTL headroom");
+    let seq = f.env.ledger().sequence();
+    f.env
+        .ledger()
+        .set_sequence_number(seq + (ttl - TTL_THRESHOLD) + 1);
+    let low = deadline_ttl(f, key);
+    assert!(low < TTL_THRESHOLD, "entry should now need a refresh");
+    low
+}
+
+#[test]
+fn dispute_deadline_read_extends_deadline_ttl() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    f.c().open_dispute(&id, &f.client);
+    let key = DataKey::DisputeDeadline(id);
+
+    let low = age_below_ttl_threshold(&f, &key);
+    assert!(low < TTL_THRESHOLD);
+
+    // The view must still answer, and its read must refresh the key.
+    assert_eq!(f.c().dispute_deadline(&id), 1_000 + 7 * 24 * 60 * 60);
+    let renewed = deadline_ttl(&f, &key);
+    assert!(
+        renewed > low,
+        "read should extend the TTL, not leave it stale"
+    );
+    assert!(renewed >= TTL_THRESHOLD);
+    assert!(renewed <= TTL_EXTEND_TO);
+}
+
+#[test]
+fn reclaim_after_dispute_timeout_refreshes_deadline_ttl() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    f.c().open_dispute(&id, &f.client);
+    let key = DataKey::DisputeDeadline(id);
+    let deadline = f.c().dispute_deadline(&id);
+
+    age_below_ttl_threshold(&f, &key);
+    f.env.ledger().set_timestamp(deadline + 1);
+    f.c().reclaim_after_dispute_timeout(&id);
+
+    assert_eq!(f.c().get(&id).status, EscrowStatus::Refunded);
+    let renewed = deadline_ttl(&f, &key);
+    assert!(renewed >= TTL_THRESHOLD);
+}
+
+#[test]
+fn dispute_deadline_without_an_open_dispute_is_not_found() {
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    // Reading a missing deadline must return `NotFound` rather than trap while
+    // trying to extend the TTL of an entry that does not exist.
+    let res = f.c().try_dispute_deadline(&id);
+    assert!(matches!(res, Err(Ok(EscrowError::NotFound))));
 }
 
 // ---------------------------------------------------------------------------
