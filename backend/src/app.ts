@@ -3,6 +3,7 @@ import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
+import { randomUUID } from "node:crypto";
 
 import { config } from "./config";
 import { prisma, checkReplicationHealth } from "./db";
@@ -29,30 +30,60 @@ import { messagesRouter } from "./routes/messages";
 import { tracingMiddleware } from "./lib/tracing";
 import { metricsMiddleware } from "./lib/metrics";
 import { metricsRouter } from "./routes/metrics";
+import { runWithContext } from "./lib/logger";
 
 /**
- * Access logging (issue #27).
+ * Correlation ID middleware.
+ * Generates or propagates `X-Correlation-ID` header and attaches it to request context.
+ */
+export function correlationIdMiddleware(): RequestHandler {
+  return (req, res, next) => {
+    const correlationId =
+      (req.headers?.["x-correlation-id"] as string) ||
+      (req.headers?.["x-request-id"] as string) ||
+      (res.locals?.correlationId as string) ||
+      randomUUID();
+
+    if (typeof res.setHeader === "function") {
+      res.setHeader("X-Correlation-ID", correlationId);
+    }
+    if (!res.locals) res.locals = {};
+    res.locals.correlationId = correlationId;
+
+    runWithContext({ correlationId }, () => next());
+  };
+}
+
+/**
+ * Access logging (issue #27 and #377).
  *
- * The API emitted no access log at all, so there was no record of what was
- * requested or how long it took. Emit one structured JSON line per request — a
- * log collector can index it without a parser, unlike an ad-hoc `console.log`
- * or a pair-format string.
- *
- * `path` is `originalUrl` (query string included) rather than `req.url`, because
- * the router rewrites `req.url` before `finish` fires and the query is often the
- * interesting part of a report. `durationMs` is wall-clock from the first byte
- * in to the response's `finish`, so it covers time spent in every handler.
+ * Emit one structured JSON line per request with timestamp, log level,
+ * correlationId, method, path, status, and duration.
  */
 export function requestLogger(): RequestHandler {
   return (req, res, next) => {
     const startedAt = process.hrtime.bigint();
+    const correlationId =
+      (req.headers?.["x-correlation-id"] as string) ||
+      (req.headers?.["x-request-id"] as string) ||
+      (res.locals?.correlationId as string) ||
+      randomUUID();
+
+    if (typeof res.setHeader === "function") {
+      res.setHeader("X-Correlation-ID", correlationId);
+    }
+    if (!res.locals) res.locals = {};
+    res.locals.correlationId = correlationId;
+
     res.on("finish", () => {
       const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
       const traceId = res.locals?.traceId || (req as unknown as { traceId?: string })?.traceId;
       console.log(
         JSON.stringify({
+          timestamp: new Date().toISOString(),
           level: "info",
           event: "http_request",
+          correlationId,
           ...(traceId ? { traceId } : {}),
           method: req.method,
           path: req.originalUrl,
@@ -61,15 +92,21 @@ export function requestLogger(): RequestHandler {
         }),
       );
     });
-    next();
+
+    runWithContext({ correlationId }, () => next());
   };
 }
 
 export async function createApp() {
   const app = express();
 
+  app.use(correlationIdMiddleware());
   app.use(tracingMiddleware());
   app.use(metricsMiddleware());
+
+  if (config.NODE_ENV !== "test") {
+    app.use(requestLogger());
+  }
 
   if (config.TRUST_PROXY > 0) {
     app.set("trust proxy", config.TRUST_PROXY);

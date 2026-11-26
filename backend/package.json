@@ -12,7 +12,8 @@
     "db:studio": "prisma studio",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "vitest run ../tests/e2e/lifecycle.test.ts"
+    "test:e2e": "vitest run ../tests/e2e/lifecycle.test.ts",
+    "test:migrations": "bash ../scripts/test_migrations.sh"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^9.1.0",
