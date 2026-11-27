@@ -61,9 +61,11 @@ pub struct EscrowData {
 }
 ```
 
-A milestone carries `amount`, `released`, `released_amount` and an advisory
+A milestone carries `amount`, `released`, `released_amount` and its own
 `deadline`. `released_amount` is what makes partial releases safe: a milestone
-is only `released` once `released_amount == amount`.
+is only `released` once `released_amount == amount`. The deadline gates
+`reclaim_milestone`: once it has passed with the milestone unpaid, the client can
+refund that milestone's remainder without waiting for the escrow-level `expiry`.
 
 #### State machine
 
@@ -94,6 +96,7 @@ is only `released` once `released_amount == amount`.
 | `Active` | `Active` / `Completed` | client | milestone not already released, index in range | pays the milestone's outstanding amount, emits `milestone_released`; `Completed` when the last one is fully paid |
 | `Active` | `Active` / `Completed` | client | `0 < amount <= remaining on milestone` | pays `amount`, accumulates `released_amount`, emits `milestone_released`; `Completed` when every milestone is fully paid |
 | `Active` | `Disputed` | client or freelancer | caller is a party | freezes the escrow, sets `dispute_deadline = now + configured timeout`, emits `dispute_opened` |
+| `Active` | `Active` / `Refunded` | client | milestone not released, `milestone.deadline > 0`, `now > milestone.deadline` | refunds that milestone's unreleased remainder, emits `milestone_reclaimed`; `Refunded` once no unreleased milestone is left |
 | `Active` | `Refunded` | client | `now > expiry` | refunds every unreleased milestone, emits `refunded` |
 | `Disputed` | `Completed` | registered dispute contract only | shares are non-negative and sum exactly to the unreleased balance | marks every milestone released, pays both shares, emits `resolved` |
 | `Disputed` | `Refunded` | client | `now > dispute_deadline` | refunds the unreleased balance, emits `refunded` |

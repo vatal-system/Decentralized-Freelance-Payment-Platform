@@ -20,6 +20,8 @@ import {
   handleFunded,
   handleDisputeOpened,
   handleMilestoneReleased,
+  handleMilestoneReclaimed,
+  handleCancelled,
   handleRaised,
   handleRefunded,
   processContractEvents,
@@ -1757,6 +1759,13 @@ class FakeMilestoneStore implements MilestoneReleaseStores {
     return this.jobs.get(escrowId)?.status;
   }
 
+  /** Override the seeded status (default ACTIVE) for a specific scenario. */
+  setStatus(escrowId: bigint, status: JobStatus): void {
+    const job = this.jobs.get(escrowId);
+    if (!job) throw new Error(`no job for escrow ${escrowId}`);
+    job.status = status;
+  }
+
   milestoneRow(jobId: string, index: number) {
     const row = this.milestones.get(`${jobId}:${index}`);
     if (!row) throw new Error(`no milestone ${index} on ${jobId}`);
@@ -1791,6 +1800,19 @@ class FakeMilestoneStore implements MilestoneReleaseStores {
       for (const job of this.jobs.values()) if (job.id === where.id) job.status = data.status;
       return {};
     },
+    // `handleCancelled` only touches jobs that are still `CREATED`.
+    updateMany: async ({
+      where,
+      data,
+    }: {
+      where: { escrowId: bigint; status: JobStatus };
+      data: { status: JobStatus };
+    }) => {
+      const job = this.jobs.get(where.escrowId);
+      if (!job || job.status !== where.status) return { count: 0 };
+      job.status = data.status;
+      return { count: 1 };
+    },
   };
 
   // The handler's write surface (`MilestoneReleaseStores.milestone`).
@@ -1812,6 +1834,132 @@ class FakeMilestoneStore implements MilestoneReleaseStores {
     },
   };
 }
+
+describe("milestone_reclaimed events (escrow.reclaim_milestone, issue #402)", () => {
+  const ESCROW = 7n;
+
+  /** A real `milestone_reclaimed` payload, escrow_id included from topic1. */
+  function reclaimed(index: number, amount: bigint): Record<string, unknown> {
+    return eventFields(
+      makeEvent(
+        "milestone_reclaimed",
+        {
+          index: nativeToScVal(index, { type: "u32" }),
+          amount: nativeToScVal(amount, { type: "i128" }),
+        },
+        10,
+        [nativeToScVal(ESCROW, { type: "u64" })],
+      ),
+    );
+  }
+
+  it("settles the reclaimed milestone in full while other work remains", async () => {
+    const db = new FakeMilestoneStore();
+    const jobId = db.seed(ESCROW, [{ amount: "10" }, { amount: "10" }]);
+
+    await handleMilestoneReclaimed(reclaimed(0, 40_000_000n), db);
+
+    // The 4 USDC remainder went back to the client, so nothing is still owed on
+    // this milestone — and it must not be recorded as only 4 of 10 released.
+    expect(db.milestoneRow(jobId, 0)).toMatchObject({
+      status: "RELEASED",
+      releasedAmount: "10",
+    });
+    expect(db.milestoneRow(jobId, 0).releasedAt).toBeInstanceOf(Date);
+    // The second milestone is untouched, so the escrow (and the job) continues.
+    expect(db.milestoneRow(jobId, 1).status).toBe("PENDING");
+    expect(db.jobStatus(ESCROW)).toBe("ACTIVE");
+  });
+
+  it("moves the job to REFUNDED once no unreleased milestone is left", async () => {
+    const db = new FakeMilestoneStore();
+    const jobId = db.seed(ESCROW, [
+      { amount: "10", status: "RELEASED", releasedAmount: "10" },
+      { amount: "10" },
+    ]);
+
+    await handleMilestoneReclaimed(reclaimed(1, 100_000_000n), db);
+
+    // The contract moves the escrow to Refunded when the last outstanding
+    // milestone is reclaimed, so the mirror must follow.
+    expect(db.jobStatus(ESCROW)).toBe("REFUNDED");
+    expect(db.milestoneRow(jobId, 1).status).toBe("RELEASED");
+  });
+
+  it("is dispatched by name, taking escrow_id from topic1", async () => {
+    const db = new FakeMilestoneStore();
+    const jobId = db.seed(ESCROW, [{ amount: "10" }]);
+
+    await dispatchEvent(
+      makeEvent(
+        "milestone_reclaimed",
+        {
+          index: nativeToScVal(0, { type: "u32" }),
+          amount: nativeToScVal(100_000_000n, { type: "i128" }),
+        },
+        10,
+        [nativeToScVal(ESCROW, { type: "u64" })],
+      ),
+      db as unknown as IndexerStore,
+    );
+
+    expect(db.milestoneRow(jobId, 0).status).toBe("RELEASED");
+    expect(db.jobStatus(ESCROW)).toBe("REFUNDED");
+  });
+});
+
+describe("cancelled events (escrow.cancel, issue #402)", () => {
+  const ESCROW = 7n;
+
+  function cancelled(escrowId = ESCROW): Record<string, unknown> {
+    return eventFields(
+      makeEvent(
+        "cancelled",
+        { client: Address.fromString(Keypair.random().publicKey()).toScVal() },
+        10,
+        [nativeToScVal(escrowId, { type: "u64" })],
+      ),
+    );
+  }
+
+  it("marks a still-unfunded job CANCELLED", async () => {
+    const db = new FakeMilestoneStore();
+    db.seed(ESCROW, [{ amount: "10" }]);
+    db.setStatus(ESCROW, "CREATED");
+
+    await handleCancelled(ESCROW, db);
+
+    expect(db.jobStatus(ESCROW)).toBe("CANCELLED");
+  });
+
+  it("does not regress a job that has since been funded and completed", async () => {
+    const db = new FakeMilestoneStore();
+    db.seed(ESCROW, [{ amount: "10" }]);
+    db.setStatus(ESCROW, "COMPLETED");
+
+    // A replayed event (cursor rewind) must not rewrite settled state.
+    await handleCancelled(ESCROW, db);
+    expect(db.jobStatus(ESCROW)).toBe("COMPLETED");
+  });
+
+  it("is dispatched by name and reads the client from the data map", async () => {
+    const db = new FakeMilestoneStore();
+    db.seed(ESCROW, [{ amount: "10" }]);
+    db.setStatus(ESCROW, "CREATED");
+
+    await dispatchEvent(
+      makeEvent(
+        "cancelled",
+        { client: Address.fromString(Keypair.random().publicKey()).toScVal() },
+        10,
+        [nativeToScVal(ESCROW, { type: "u64" })],
+      ),
+      db as unknown as IndexerStore,
+    );
+
+    expect(db.jobStatus(ESCROW)).toBe("CANCELLED");
+  });
+});
 
 describe("milestone_released events (issue #25)", () => {
   const ESCROW = 7n;

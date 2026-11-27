@@ -104,7 +104,8 @@ Client / Freelancer ── submit(rater, ratee, escrow_id, score) ──► Repu
 ```
 
 - **escrow** enforces the state machine `Created → Active → Completed`, with
-  `Disputed → Completed` (via arbitration), `Active → Refunded` (expiry) and
+  `Disputed → Completed` (via arbitration), `Active → Refunded` (expiry, or the
+  last outstanding milestone reclaimed after its own deadline) and
   `Created → Cancelled` (the client closes an unfunded job).
 - **dispute** can only change escrow funds through `escrow.resolve`, which
   independently checks that the shares sum to the funds held.
@@ -140,6 +141,7 @@ state machine, cross-contract calls, and the backend's role — see
 | `release_partial(escrow_id, milestone_index, amount)` | Releases part of a milestone; tracks `released_amount` |
 | `open_dispute(escrow_id, initiator)` | Either participant freezes the escrow |
 | `reclaim_after_dispute_timeout(escrow_id)` | Client-only escape hatch once the configured dispute timelock passes |
+| `reclaim_milestone(escrow_id, milestone_index)` | Client-only; refunds one overdue milestone's unreleased remainder once that milestone's own `deadline` passes, without waiting for the escrow expiry. Earlier partial releases are not clawed back |
 | `resolve(escrow_id, client_share, freelancer_share)` | Dispute-contract-only; splits the funds |
 | `reclaim_expired(escrow_id)` | Client-only refund of the unreleased remainder after expiry; earlier partial releases are not clawed back |
 | `get(escrow_id)` / `dispute_deadline(escrow_id)` / `dispute_contract()` / `dispute_timeout_seconds()` | Read-only views |
@@ -199,9 +201,11 @@ return an **unsigned XDR** for the client to sign, and never a key.
 | `PUT` | `/api/jobs/:id/assign` | ✅ | Assign a freelancer |
 | `POST` | `/api/escrow/build/create` | ✅ | Build `escrow.create` |
 | `POST` | `/api/escrow/build/fund` | ✅ | Build `escrow.fund` |
+| `POST` | `/api/escrow/build/cancel` | ✅ | Build `escrow.cancel` (client, closes an unfunded escrow) |
 | `POST` | `/api/escrow/build/release` | ✅ | Build `escrow.release_milestone` |
 | `POST` | `/api/escrow/build/reclaim` | ✅ | Build `escrow.reclaim_expired` |
 | `POST` | `/api/escrow/build/reclaim-dispute` | ✅ | Build `escrow.reclaim_after_dispute_timeout` (client, after the configured dispute timelock) |
+| `POST` | `/api/escrow/build/reclaim-milestone` | ✅ | Build `escrow.reclaim_milestone` (client, once that milestone's deadline has passed) |
 | `POST` | `/api/escrow/build/update-milestones` | ✅ | Build `escrow.update_milestones` (client, before funding) |
 | `PUT` | `/api/escrow/:escrowId/milestones` | ✅ | Record a confirmed milestone edit |
 | `GET` | `/api/escrow/:escrowId/receipt` | — | Printable receipt: job, milestones, releases, transaction links |

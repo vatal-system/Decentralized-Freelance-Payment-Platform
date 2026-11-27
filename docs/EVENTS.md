@@ -34,9 +34,10 @@ of the state tables keeps a transaction hash.
 | `MilestonesUpdated` | `milestones_updated` | `escrow_id: u64` | `count: u32`, `total_amount: i128` | `update_milestones` — client edits milestones while escrow is still `Created` (unfunded). |
 | `Cancelled` | `cancelled` | `escrow_id: u64` | `client: Address` | `cancel` — client closes an unfunded `Created` escrow; `Created` → `Cancelled`. |
 | `MilestoneReleased` | `milestone_released` | `escrow_id: u64` | `index: u32`, `amount: i128` | `release_milestone` / `release_partial` — pays `amount` to freelancer while `Active`; when all milestones are paid out, `Active` → `Completed`. |
+| `MilestoneReclaimed` | `milestone_reclaimed` | `escrow_id: u64` | `index: u32`, `amount: i128` | `reclaim_milestone` — client refunds one overdue milestone's unreleased remainder once its own `deadline` has passed; the escrow becomes `Refunded` when nothing is left outstanding, otherwise it stays `Active`. |
 | `DisputeOpened` | `dispute_opened` | `escrow_id: u64` | `initiator: Address` | `open_dispute` — client or freelancer freezes an `Active` escrow; `Active` → `Disputed`. |
 | `Resolved` | `resolved` | `escrow_id: u64` | `client_share: i128`, `freelancer_share: i128` | `resolve` (dispute contract only) — distributes funds between client and freelancer; `Disputed` → `Resolved`. |
-| `Refunded` | `refunded` | `escrow_id: u64` | `client: Address`, `amount: i128` | `refund_expired` (`Active` past expiry) or `reclaim_disputed` (`Disputed` past timelock) — returns unreleased balance to client; `Active`/`Disputed` → `Refunded`. |
+| `Refunded` | `refunded` | `escrow_id: u64` | `client: Address`, `amount: i128` | `refund_expired` (`Active` past expiry) or `reclaim_disputed` (`Disputed` past timelock) — returns unreleased balance to client; `Active`/`Disputed` → `Refunded`. `reclaim_milestone` emits `milestone_reclaimed` instead, and does not emit this event even when it closes the escrow. |
 | `DisputeContractProposed` | `dispute_contract_proposed` | `admin: Address` | `new_contract: Address`, `effective_at: u64` | `set_dispute_contract` — admin schedules a dispute-contract rotation with a timelock. |
 | `DisputeContractCancelled` | `dispute_contract_cancelled` | `admin: Address` | `cancelled_contract: Address` | `cancel_dispute_contract` — admin cancels a pending dispute-contract proposal. |
 | `DisputeContractUpdated` | `dispute_contract_updated` | `admin: Address` | `old_contract: Address`, `new_contract: Address` | `apply_dispute_contract` — admin applies a proposed dispute-contract rotation after `effective_at`. |
@@ -47,6 +48,11 @@ of the state tables keeps a transaction hash.
 > milestone's total. A consumer must accumulate the amounts for a milestone (and
 > compare them against the milestone's amount) to tell a partial release from a
 > complete one; the indexer stores that running total in `Milestone.releasedAmount`.
+>
+> `MilestoneReclaimed` settles the milestone *in full*, even though `amount` is
+> only the remainder refunded by that call — anything released earlier stays with
+> the freelancer and is not clawed back. Do not accumulate it as a payment; the
+> indexer sets `Milestone.releasedAmount` to the milestone's full amount.
 >
 > `escrow.resolve` emits only `resolved`, and it sets every milestone's on-chain
 > `released_amount` to its full `amount`; the indexer writes the same full amount

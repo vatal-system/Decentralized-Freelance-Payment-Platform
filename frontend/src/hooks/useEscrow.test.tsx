@@ -169,6 +169,47 @@ describe("useEscrow transaction state", () => {
     expect(scU64).toHaveBeenCalledWith(7n);
   });
 
+  it("submits a per-milestone reclaim as escrow.reclaim_milestone with a u32 index", async () => {
+    const { result } = renderEscrow();
+
+    await act(async () => {
+      await result.current.reclaimMilestone(7n, 2);
+    });
+
+    const [pk, contractId, method, args] = h.buildContractCall.mock.calls[0] as unknown as [
+      string,
+      string,
+      string,
+      unknown[],
+    ];
+    expect(pk).toBe("GCLIENT");
+    expect(contractId).toBe("CESCROW");
+    expect(method).toBe("reclaim_milestone");
+    expect(args).toHaveLength(2);
+    expect(scU64).toHaveBeenCalledWith(7n);
+    expect(scU32).toHaveBeenCalledWith(2);
+  });
+
+  it("submits an unfunded cancellation as escrow.cancel", async () => {
+    const { result } = renderEscrow();
+
+    await act(async () => {
+      await result.current.cancelEscrow(7n);
+    });
+
+    const [pk, contractId, method, args] = h.buildContractCall.mock.calls[0] as unknown as [
+      string,
+      string,
+      string,
+      unknown[],
+    ];
+    expect(pk).toBe("GCLIENT");
+    expect(contractId).toBe("CESCROW");
+    expect(method).toBe("cancel");
+    expect(args).toHaveLength(1);
+    expect(scU64).toHaveBeenCalledWith(7n);
+  });
+
   it("opens a dispute as escrow.open_dispute then dispute.raise, in that order", async () => {
     // `raise` is the call that mints the dispute the panel rules on; without it
     // the escrow is frozen with no dispute to arbitrate (#86). Its simulated

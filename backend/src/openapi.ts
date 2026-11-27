@@ -44,6 +44,7 @@ import { authSchema, challengeSchema, updateSchema } from "./routes/users";
 import {
   buildCreateSchema,
   recordMilestonesSchema,
+  reclaimMilestoneSchema,
   releaseSchema,
   releasePartialSchema,
   syncSchema as escrowSyncSchema,
@@ -907,6 +908,18 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/escrow/build/cancel",
+  tags: ["Escrow"],
+  summary: "Build escrow.cancel",
+  description:
+    "The client closes an unfunded `Created` escrow on-chain; it becomes `Cancelled`.",
+  security: auth,
+  request: { body: { content: { "application/json": { schema: escrowSyncSchema } } } },
+  responses: { 200: json(unsignedTransaction, "Unsigned transaction"), 400: errors[400], 401: errors[401] },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/escrow/build/release",
   tags: ["Escrow"],
   summary: "Build escrow.release_milestone",
@@ -952,6 +965,18 @@ registry.registerPath({
     "The client-only escape hatch once the configured dispute timelock passes with no ruling.",
   security: auth,
   request: { body: { content: { "application/json": { schema: escrowSyncSchema } } } },
+  responses: { 200: json(unsignedTransaction, "Unsigned transaction"), 400: errors[400], 401: errors[401] },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/escrow/build/reclaim-milestone",
+  tags: ["Escrow"],
+  summary: "Build escrow.reclaim_milestone",
+  description:
+    "The client reclaims one overdue milestone's unreleased remainder once that milestone's own deadline has passed.",
+  security: auth,
+  request: { body: { content: { "application/json": { schema: reclaimMilestoneSchema } } } },
   responses: { 200: json(unsignedTransaction, "Unsigned transaction"), 400: errors[400], 401: errors[401] },
 });
 

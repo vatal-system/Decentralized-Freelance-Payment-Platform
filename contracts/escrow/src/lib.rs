@@ -9,6 +9,8 @@
 //!         ↘ Cancelled (via cancel, before funding)
 //!                  ↘ Disputed → Completed (via dispute contract)
 //!                  ↘ Refunded (via reclaim_expired)
+//!                  ↘ Refunded (via reclaim_milestone, once the last
+//!                              outstanding milestone has been reclaimed)
 //!
 //! # Contributor Notes
 //! - All token transfers use the Stellar Asset Contract (SAC) interface.
@@ -120,6 +122,19 @@ pub struct Funded {
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MilestoneReleased {
+    #[topic]
+    pub escrow_id: u64,
+    pub index: u32,
+    pub amount: i128,
+}
+
+/// The client reclaimed the unreleased remainder of one overdue milestone.
+///
+/// `amount` is the remainder refunded by this call (the milestone's `amount`
+/// minus whatever had already been released), not the milestone's full amount.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneReclaimed {
     #[topic]
     pub escrow_id: u64,
     pub index: u32,
@@ -934,6 +949,91 @@ impl EscrowContract {
             escrow_id,
             client: escrow.client.clone(),
             amount: unreleased,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Client reclaims the unreleased remainder of a single overdue milestone.
+    ///
+    /// A milestone carries its own `deadline` (unix seconds). Once that has
+    /// passed with the milestone still unpaid, the client can take back just
+    /// that milestone's remainder and leave the rest of the escrow running —
+    /// the per-milestone counterpart to [`reclaim_expired`], which cannot be
+    /// used while the escrow-level `expiry` is still in the future.
+    ///
+    /// Only `Active` escrows are eligible: `Created` holds no funds and
+    /// `Disputed` is frozen for the panel. The milestone must not already be
+    /// released, and its `deadline` must be a real one (`> 0`): a milestone
+    /// without a deadline can never be overdue, so `NotExpired` is returned for
+    /// that case too.
+    ///
+    /// # Partial-release protection
+    /// Only `amount - released_amount` is refunded, and the milestone is then
+    /// marked fully released, so the remainder can neither be paid out to the
+    /// freelancer later nor refunded a second time. If this settles the last
+    /// outstanding milestone the escrow moves to `Refunded` — the same terminal
+    /// state `reclaim_expired` uses — while funds already released stay with the
+    /// freelancer.
+    ///
+    /// [`reclaim_expired`]: EscrowContract::reclaim_expired
+    pub fn reclaim_milestone(
+        env: Env,
+        escrow_id: u64,
+        milestone_index: u32,
+    ) -> Result<(), EscrowError> {
+        Self::require_not_paused(&env)?;
+        let mut escrow = Self::load(&env, escrow_id)?;
+        escrow.client.require_auth();
+
+        if escrow.status != EscrowStatus::Active {
+            return Err(EscrowError::InvalidStatus);
+        }
+        if milestone_index >= escrow.milestones.len() {
+            return Err(EscrowError::MilestoneIndexOutOfBounds);
+        }
+
+        let mut milestone = escrow
+            .milestones
+            .get(milestone_index)
+            .ok_or(EscrowError::MilestoneIndexOutOfBounds)?;
+        if milestone.released {
+            return Err(EscrowError::MilestoneAlreadyReleased);
+        }
+        // A milestone with no deadline is never overdue; neither is one whose
+        // deadline has not passed yet (`ledger.timestamp() > deadline`, the same
+        // strict comparison `reclaim_expired` uses for the escrow expiry).
+        if milestone.deadline == 0 || env.ledger().timestamp() <= milestone.deadline {
+            return Err(EscrowError::NotExpired);
+        }
+
+        let amount = milestone
+            .amount
+            .checked_sub(milestone.released_amount)
+            .ok_or(EscrowError::Overflow)?;
+
+        // Effects before interaction: refund the remainder and retire the
+        // milestone, so neither the release nor a second reclaim can move this
+        // portion of the funds again.
+        milestone.released_amount = milestone.amount;
+        milestone.released = true;
+        escrow.milestones.set(milestone_index, milestone);
+
+        let all_settled = escrow.milestones.iter().all(|m| m.released);
+        if all_settled {
+            escrow.status = EscrowStatus::Refunded;
+        }
+        Self::save(&env, escrow_id, &escrow);
+
+        if amount > 0 {
+            let contract = env.current_contract_address();
+            token::Client::new(&env, &escrow.token).transfer(&contract, &escrow.client, &amount);
+        }
+
+        MilestoneReclaimed {
+            escrow_id,
+            index: milestone_index,
+            amount,
         }
         .publish(&env);
         Ok(())

@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { Keypair, nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
 import {
   buildArbitrateArgs,
+  buildCancelArgs,
   buildFundArgs,
   buildOpenDisputeArgs,
   buildRaiseArgs,
   buildReclaimArgs,
   buildReclaimDisputeArgs,
+  buildReclaimMilestoneArgs,
   buildReleaseMilestoneArgs,
   buildReputationSubmitArgs,
   scAddress,
@@ -64,6 +66,19 @@ describe("route argument builders", () => {
 
   it("buildReclaimDisputeArgs: escrow_id is u64 for the dispute-timelock path", () => {
     const args = buildReclaimDisputeArgs(7n);
+    expect(args.map(tag)).toEqual(["scvU64"]);
+    expect(scValToNative(args[0])).toBe(7n);
+  });
+
+  it("buildReclaimMilestoneArgs: milestone_index is u32", () => {
+    const args = buildReclaimMilestoneArgs(7n, 1);
+    expect(args.map(tag)).toEqual(["scvU64", "scvU32"]);
+    expect(scValToNative(args[0])).toBe(7n);
+    expect(scValToNative(args[1])).toBe(1);
+  });
+
+  it("buildCancelArgs: escrow_id is u64", () => {
+    const args = buildCancelArgs(7n);
     expect(args.map(tag)).toEqual(["scvU64"]);
     expect(scValToNative(args[0])).toBe(7n);
   });

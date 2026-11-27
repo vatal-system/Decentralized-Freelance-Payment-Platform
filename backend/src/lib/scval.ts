@@ -17,11 +17,13 @@ export {
 } from "./sdk/scval";
 
 export {
+  buildCancelArgs,
   buildFundArgs,
   buildReleaseMilestoneArgs,
   buildReleasePartialArgs,
   buildReclaimArgs,
   buildReclaimDisputeArgs,
+  buildReclaimMilestoneArgs,
   buildOpenDisputeArgs,
   buildReputationSubmitArgs,
   buildRaiseArgs,

@@ -1,10 +1,12 @@
 import type { xdr } from "@stellar/stellar-sdk";
 import {
+  buildCancelArgs,
   buildCreateArgs,
   buildFundArgs,
   buildOpenDisputeArgs,
   buildReclaimArgs,
   buildReclaimDisputeArgs,
+  buildReclaimMilestoneArgs,
   buildReleaseMilestoneArgs,
   buildReleasePartialArgs,
   buildUpdateMilestonesArgs,
@@ -73,6 +75,22 @@ export class EscrowClient {
       contractId: this.contractId,
       method: "reclaim_after_dispute_timeout",
       args: buildReclaimDisputeArgs(escrowId),
+    };
+  }
+
+  reclaimMilestone(escrowId: number | bigint, milestoneIndex: number): ContractInvocation {
+    return {
+      contractId: this.contractId,
+      method: "reclaim_milestone",
+      args: buildReclaimMilestoneArgs(escrowId, milestoneIndex),
+    };
+  }
+
+  cancel(escrowId: number | bigint): ContractInvocation {
+    return {
+      contractId: this.contractId,
+      method: "cancel",
+      args: buildCancelArgs(escrowId),
     };
   }
 

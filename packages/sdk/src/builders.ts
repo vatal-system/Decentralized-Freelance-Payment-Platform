@@ -34,6 +34,24 @@ export function buildReclaimDisputeArgs(escrowId: number | bigint): xdr.ScVal[] 
   return [scU64(escrowId)];
 }
 
+/**
+ * `escrow.reclaim_milestone(escrow_id: u64, milestone_index: u32)`
+ *
+ * Per-milestone reclaim of an overdue milestone, distinct from the two
+ * escrow-level refunds above; the index must be `u32` explicitly.
+ */
+export function buildReclaimMilestoneArgs(
+  escrowId: number | bigint,
+  milestoneIndex: number,
+): xdr.ScVal[] {
+  return [scU64(escrowId), scU32(milestoneIndex)];
+}
+
+/** `escrow.cancel(escrow_id: u64)` */
+export function buildCancelArgs(escrowId: number | bigint): xdr.ScVal[] {
+  return [scU64(escrowId)];
+}
+
 /** `escrow.open_dispute(escrow_id: u64, initiator: Address)` */
 export function buildOpenDisputeArgs(
   escrowId: number | bigint,

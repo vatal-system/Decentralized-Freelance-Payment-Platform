@@ -143,7 +143,9 @@ Created ──cancel──► Cancelled (nothing was funded)
                  │
                  ├──open_dispute──► Disputed ──resolve──► Completed
                  │                     └──(past dispute deadline)──► Refunded
-                 └──(past expiry)──► Refunded
+                 ├──(past expiry)──────────────────────────────────► Refunded
+                 └──reclaim_milestone──► (still Active) or Refunded
+                                          once every milestone is settled
 ```
 
 Details of the dispute panel and timelock are in
@@ -167,6 +169,7 @@ Details of the dispute panel and timelock are in
 | escrow | `open_dispute(escrow_id, initiator)` | either party; freezes the escrow and starts the dispute timelock |
 | escrow | `resolve(escrow_id, client_share, freelancer_share)` | **dispute contract only**; shares must sum to the funds held |
 | escrow | `reclaim_expired(escrow_id)` | client-only refund of the unreleased remainder after expiry; earlier releases are not clawed back |
+| escrow | `reclaim_milestone(escrow_id, milestone_index)` | client-only refund of one overdue milestone's unreleased remainder once that milestone's own `deadline` passes; closes the escrow as `Refunded` when nothing is left outstanding |
 | escrow | `reclaim_after_dispute_timeout(escrow_id)` | client refund from `Disputed` once the dispute deadline passes |
 | escrow | `get(escrow_id)` / `dispute_contract()` / `dispute_deadline(escrow_id)` | views |
 | dispute | `init(arbitrators, threshold)` | one-time; unique panel addresses, valid threshold, every panel member authorizes |

@@ -24,7 +24,12 @@
  *   off-chain row, which is where the reason is kept for the panel to read.
  * - Each unreleased milestone shows its deadline and whether it has passed, so
  *   the reminder is visible where the work is released, not only on the
- *   Dashboard panel (issue #74).
+ *   Dashboard panel (issue #74). Once it has passed, the client can reclaim just
+ *   that milestone's unreleased remainder (`reclaim_milestone`, issue #402) —
+ *   behind a confirmation, because the refund is irreversible.
+ * - An unfunded `Created` escrow can be cancelled on-chain by its client
+ *   (`escrow.cancel`, issue #402). That is a different action from the off-chain
+ *   `POST /api/jobs/:id/cancel` the Dashboard uses for a draft job.
  * - Reading is public (issue #108): the escrow view is simulated from the
  *   read-only source, so a shared /jobs/:id link renders with no wallet
  *   connected — only release/dispute/reclaim/rate need one. A read failure is
@@ -102,6 +107,8 @@ export default function JobDetail() {
     approveDisputeSplit,
     reclaimDisputed,
     reclaimExpired,
+    reclaimMilestone,
+    cancelEscrow,
     submitRating,
     getDisputeDeadline,
     getArbitrators,
@@ -158,6 +165,10 @@ export default function JobDetail() {
   const [offChainJob, setOffChainJob] = useState<JobApi | null>(null);
   // Reclaim confirmation modal state (issue #259)
   const [confirmReclaimType, setConfirmReclaimType] = useState<"disputed" | "expired" | null>(null);
+  // Per-milestone reclaim (issue #402): the index awaiting confirmation.
+  const [confirmMilestoneReclaim, setConfirmMilestoneReclaim] = useState<number | null>(null);
+  // Unfunded-escrow cancellation (issue #402).
+  const [confirmCancel, setConfirmCancel] = useState(false);
 
   // Partial milestone release state (issue #256)
   const [partialMilestoneIndex, setPartialMilestoneIndex] = useState<number | null>(null);
@@ -354,6 +365,7 @@ export default function JobDetail() {
   const isClient = publicKey !== null && escrow?.client === publicKey;
   const isFreelancer = publicKey !== null && escrow?.freelancer === publicKey;
   const isParticipant = isClient || isFreelancer;
+  const isCreated = escrow?.status === "Created";
   const isActive = escrow?.status === "Active";
   const isCompleted = escrow?.status === "Completed";
   /** The address the connected participant would rate. */
@@ -674,7 +686,29 @@ export default function JobDetail() {
                           }}
                         >
                           {isPartialOpen ? "Cancel Partial" : "Release Partial"}
-                        </button>
+                        </button>{" "}
+                        {/* Per-milestone reclaim (issue #402): available once
+                            this milestone's own deadline passes, and only for
+                            the part that has not already been released. */}
+                        {m.deadline > 0n &&
+                          secondsUntil(m.deadline, milestoneNow) === 0 &&
+                          remaining > 0n && (
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              disabled={isPending("reclaim", `${escrowId}:${i}`)}
+                              aria-busy={isPending("reclaim", `${escrowId}:${i}`)}
+                              title={`Refund this milestone's unreleased ${fromBaseUnits(
+                                remaining,
+                                decimals,
+                              )} ${symbol} to your wallet`}
+                              onClick={() => setConfirmMilestoneReclaim(i)}
+                            >
+                              {isPending("reclaim", `${escrowId}:${i}`)
+                                ? "Reclaiming…"
+                                : "Reclaim milestone"}
+                            </button>
+                          )}
                       </>
                     )}
                   </div>
@@ -1083,6 +1117,24 @@ export default function JobDetail() {
             </section>
           )}
 
+          {isCreated && isClient && (
+            <section>
+              <p className="muted">
+                This escrow has not been funded. Cancelling closes it on-chain as{" "}
+                Cancelled; no funds move because none were ever deposited, and it can no
+                longer be funded afterwards.
+              </p>
+              <button
+                disabled={isPending("cancel", `${escrowId}`)}
+                aria-busy={isPending("cancel", `${escrowId}`)}
+                title="Close this unfunded escrow on-chain"
+                onClick={() => setConfirmCancel(true)}
+              >
+                {isPending("cancel", `${escrowId}`) ? "Cancelling…" : "Cancel escrow"}
+              </button>
+            </section>
+          )}
+
           {isActive && isClient && escrow.expiry > 0n && BigInt(now) > escrow.expiry && (
             <section>
               <p className="muted">
@@ -1237,6 +1289,55 @@ export default function JobDetail() {
                     void refresh();
                   });
                 }
+              }}
+            />
+          )}
+
+          {confirmMilestoneReclaim !== null && escrow && (
+            <ConfirmModal
+              isOpen={true}
+              title="Confirm Milestone Reclaim"
+              description={`Milestone ${confirmMilestoneReclaim + 1}'s deadline has passed. Confirming refunds its unreleased balance to your wallet and closes that milestone; anything already released stays with the freelancer.`}
+              amount={formatAmount(
+                escrow.milestones[confirmMilestoneReclaim].amount -
+                  escrow.milestones[confirmMilestoneReclaim].released_amount,
+                decimals,
+              )}
+              assetSymbol={symbol}
+              confirmLabel="Confirm Milestone Reclaim"
+              cancelLabel="Cancel"
+              isDangerous={true}
+              isPending={isPending("reclaim", `${escrowId}:${confirmMilestoneReclaim}`)}
+              onCancel={() => setConfirmMilestoneReclaim(null)}
+              onConfirm={() => {
+                const index = confirmMilestoneReclaim;
+                setConfirmMilestoneReclaim(null);
+                void reclaimMilestone(escrowId, index).then((res) => {
+                  if (res) setLastHash(res.hash);
+                  void refresh();
+                });
+              }}
+            />
+          )}
+
+          {confirmCancel && (
+            <ConfirmModal
+              isOpen={true}
+              title="Confirm Escrow Cancellation"
+              description="This escrow has not been funded. Confirming closes it on-chain as Cancelled; no funds move, and the escrow can no longer be funded."
+              amount={formatAmount(escrow.total_amount, decimals)}
+              assetSymbol={symbol}
+              confirmLabel="Confirm Cancellation"
+              cancelLabel="Keep escrow"
+              isDangerous={true}
+              isPending={isPending("cancel", `${escrowId}`)}
+              onCancel={() => setConfirmCancel(false)}
+              onConfirm={() => {
+                setConfirmCancel(false);
+                void cancelEscrow(escrowId).then((res) => {
+                  if (res) setLastHash(res.hash);
+                  void refresh();
+                });
               }}
             />
           )}

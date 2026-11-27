@@ -34,6 +34,8 @@ export const KNOWN_EVENTS = new Set([
   "funded",
   "milestones_updated",
   "milestone_released",
+  "milestone_reclaimed",
+  "cancelled",
   "dispute_opened",
   "resolved",
   "refunded",

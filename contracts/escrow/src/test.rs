@@ -45,6 +45,20 @@ fn milestones(env: &Env, amounts: &[i128]) -> Vec<Milestone> {
     v
 }
 
+/// Milestones with explicit per-milestone reclaim deadlines.
+fn milestones_with_deadlines(env: &Env, entries: &[(i128, u64)]) -> Vec<Milestone> {
+    let mut v = Vec::new(env);
+    for (amount, deadline) in entries {
+        v.push_back(Milestone {
+            amount: *amount,
+            released: false,
+            released_amount: 0,
+            deadline: *deadline,
+        });
+    }
+    v
+}
+
 struct Fixture {
     env: Env,
     escrow: Address,
@@ -90,6 +104,21 @@ impl Fixture {
             &self.token,
             &milestones(&self.env, amounts),
             &10_000,
+        );
+        self.c().fund(&id);
+        id
+    }
+
+    /// Create a funded escrow whose milestones carry reclaim deadlines. The
+    /// escrow-level expiry is far in the future so `reclaim_expired` is never
+    /// what settles these tests.
+    fn escrow_with_deadlines(&self, entries: &[(i128, u64)]) -> u64 {
+        let id = self.c().create(
+            &self.client,
+            &self.freelancer,
+            &self.token,
+            &milestones_with_deadlines(&self.env, entries),
+            &100_000,
         );
         self.c().fund(&id);
         id
@@ -1242,6 +1271,236 @@ fn reclaim_from_disputed_is_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// reclaim_milestone
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reclaim_milestone_refunds_only_the_overdue_milestones_remainder() {
+    let f = fixture();
+    let id = f.escrow_with_deadlines(&[(400, 2_000), (600, 3_000)]);
+    assert_eq!(f.balance(&f.client), 9_000, "the full amount was funded");
+
+    f.env.ledger().set_timestamp(2_500); // milestone 0 overdue, milestone 1 not
+    f.c().reclaim_milestone(&id, &0);
+
+    assert_eq!(f.balance(&f.client), 9_400);
+    assert_eq!(f.balance(&f.freelancer), 0);
+    assert_eq!(f.balance(&f.escrow), 600, "milestone 1 stays funded");
+
+    let data = f.c().get(&id);
+    assert_eq!(
+        data.status,
+        EscrowStatus::Active,
+        "the escrow stays open while another milestone is outstanding"
+    );
+    let m0 = data.milestones.get(0).unwrap();
+    assert!(m0.released, "the reclaimed milestone is settled");
+    assert_eq!(m0.released_amount, 400);
+    let m1 = data.milestones.get(1).unwrap();
+    assert!(!m1.released, "the other milestone is untouched");
+    assert_eq!(m1.released_amount, 0);
+}
+
+#[test]
+fn reclaim_milestone_refunds_only_the_unreleased_part_of_a_partially_paid_milestone() {
+    let f = fixture();
+    let id = f.escrow_with_deadlines(&[(400, 2_000)]);
+    f.c().release_partial(&id, &0, &150);
+    assert_eq!(f.balance(&f.freelancer), 150);
+
+    f.env.ledger().set_timestamp(2_001);
+    f.c().reclaim_milestone(&id, &0);
+
+    // Only the remaining 250 comes back; the 150 already paid is not clawed back.
+    assert_eq!(f.balance(&f.freelancer), 150);
+    assert_eq!(f.balance(&f.client), 9_600 + 250);
+    assert_eq!(f.balance(&f.escrow), 0);
+    assert_eq!(f.c().get(&id).status, EscrowStatus::Refunded);
+}
+
+#[test]
+fn reclaim_milestone_before_deadline_is_rejected() {
+    let f = fixture();
+    let id = f.escrow_with_deadlines(&[(1_000, 2_000)]);
+
+    let res = f.c().try_reclaim_milestone(&id, &0);
+    assert!(matches!(res, Err(Ok(EscrowError::NotExpired))));
+
+    // The comparison is strict (`now > deadline`), matching `reclaim_expired`.
+    f.env.ledger().set_timestamp(2_000);
+    let res = f.c().try_reclaim_milestone(&id, &0);
+    assert!(matches!(res, Err(Ok(EscrowError::NotExpired))));
+
+    assert_eq!(f.balance(&f.escrow), 1_000, "nothing was refunded");
+    assert_eq!(f.c().get(&id).status, EscrowStatus::Active);
+}
+
+#[test]
+fn reclaim_milestone_without_a_deadline_is_rejected() {
+    // `deadline == 0` means "no deadline": such a milestone can never be
+    // overdue, so only `reclaim_expired` (the escrow-level expiry) can refund it.
+    let f = fixture();
+    let id = f.funded(&[1_000]);
+    f.env.ledger().set_timestamp(50_000);
+
+    let res = f.c().try_reclaim_milestone(&id, &0);
+    assert!(matches!(res, Err(Ok(EscrowError::NotExpired))));
+    assert_eq!(f.balance(&f.escrow), 1_000);
+}
+
+#[test]
+fn reclaimed_milestone_cannot_be_released_or_reclaimed_again() {
+    let f = fixture();
+    // Two milestones so the escrow stays `Active` after the first is reclaimed.
+    let id = f.escrow_with_deadlines(&[(1_000, 2_000), (1_000, 3_000)]);
+    f.env.ledger().set_timestamp(2_001);
+    f.c().reclaim_milestone(&id, &0);
+    assert_eq!(f.c().get(&id).status, EscrowStatus::Active);
+
+    // The freelancer cannot be paid the funds the client already took back.
+    let res = f.c().try_release_milestone(&id, &0);
+    assert!(matches!(
+        res,
+        Err(Ok(EscrowError::MilestoneAlreadyReleased))
+    ));
+    let res = f.c().try_release_partial(&id, &0, &1);
+    assert!(matches!(
+        res,
+        Err(Ok(EscrowError::MilestoneAlreadyReleased))
+    ));
+    // And the client cannot refund the same funds twice.
+    let res = f.c().try_reclaim_milestone(&id, &0);
+    assert!(matches!(
+        res,
+        Err(Ok(EscrowError::MilestoneAlreadyReleased))
+    ));
+
+    assert_eq!(f.balance(&f.freelancer), 0);
+    assert_eq!(f.balance(&f.escrow), 1_000, "milestone 1 is still funded");
+}
+
+#[test]
+fn reclaim_milestone_out_of_bounds_is_rejected() {
+    let f = fixture();
+    let id = f.escrow_with_deadlines(&[(1_000, 2_000)]);
+    f.env.ledger().set_timestamp(2_001);
+
+    let res = f.c().try_reclaim_milestone(&id, &1);
+    assert!(matches!(
+        res,
+        Err(Ok(EscrowError::MilestoneIndexOutOfBounds))
+    ));
+    assert_eq!(f.balance(&f.escrow), 1_000);
+}
+
+#[test]
+fn reclaim_milestone_on_an_unfunded_escrow_is_rejected() {
+    let f = fixture();
+    let id = f.c().create(
+        &f.client,
+        &f.freelancer,
+        &f.token,
+        &milestones_with_deadlines(&f.env, &[(1_000, 1_500)]),
+        &100_000,
+    );
+    f.env.ledger().set_timestamp(2_000);
+
+    let res = f.c().try_reclaim_milestone(&id, &0);
+    assert!(matches!(res, Err(Ok(EscrowError::InvalidStatus))));
+    assert_eq!(f.c().get(&id).status, EscrowStatus::Created);
+}
+
+#[test]
+fn reclaim_milestone_from_a_disputed_escrow_is_rejected() {
+    let f = fixture();
+    let id = f.escrow_with_deadlines(&[(1_000, 2_000)]);
+    f.c().open_dispute(&id, &f.client);
+    f.env.ledger().set_timestamp(2_001);
+
+    // Frozen funds belong to the panel until its ruling or the dispute timelock.
+    let res = f.c().try_reclaim_milestone(&id, &0);
+    assert!(matches!(res, Err(Ok(EscrowError::InvalidStatus))));
+    assert_eq!(f.balance(&f.escrow), 1_000);
+}
+
+#[test]
+fn reclaiming_the_last_outstanding_milestone_closes_the_escrow_as_refunded() {
+    let f = fixture();
+    let id = f.escrow_with_deadlines(&[(400, 2_000), (600, 2_000)]);
+    f.c().release_milestone(&id, &0); // 400 paid to the freelancer
+    f.env.ledger().set_timestamp(2_001);
+
+    f.c().reclaim_milestone(&id, &1);
+
+    assert_eq!(f.balance(&f.freelancer), 400);
+    assert_eq!(f.balance(&f.client), 9_000 + 600);
+    assert_eq!(f.balance(&f.escrow), 0);
+    assert_eq!(f.c().get(&id).status, EscrowStatus::Refunded);
+
+    // A closed escrow cannot be extended by releasing into it.
+    let res = f.c().try_release_milestone(&id, &1);
+    assert!(matches!(res, Err(Ok(EscrowError::InvalidStatus))));
+}
+
+#[test]
+fn reclaiming_one_milestone_leaves_the_others_releasable() {
+    let f = fixture();
+    let id = f.escrow_with_deadlines(&[(400, 2_000), (600, 3_000)]);
+    f.env.ledger().set_timestamp(2_500);
+    f.c().reclaim_milestone(&id, &0);
+
+    // The escrow is still Active, so the remaining milestone can still be paid.
+    f.c().release_milestone(&id, &1);
+    assert_eq!(f.balance(&f.freelancer), 600);
+    assert_eq!(f.balance(&f.escrow), 0);
+    assert_eq!(f.c().get(&id).status, EscrowStatus::Completed);
+}
+
+#[test]
+fn milestone_reclaimed_event_carries_index_and_amount_refunded() {
+    let f = fixture();
+    let id = f.escrow_with_deadlines(&[(400, 2_000)]);
+    f.c().release_partial(&id, &0, &150);
+    f.env.ledger().set_timestamp(2_001);
+    f.c().reclaim_milestone(&id, &0);
+
+    let data = event_data(&f.env, "milestone_reclaimed");
+    let index: u32 = field(&f.env, &data, "index");
+    let amount: i128 = field(&f.env, &data, "amount");
+    let escrow_id: u64 = event_topic1(&f.env, "milestone_reclaimed");
+    assert_eq!(escrow_id, id);
+    assert_eq!(index, 0);
+    assert_eq!(amount, 250, "the event reports what this call refunded");
+}
+
+#[test]
+fn reclaim_milestone_unknown_escrow_is_rejected() {
+    let f = fixture();
+    let res = f.c().try_reclaim_milestone(&999, &0);
+    assert!(matches!(res, Err(Ok(EscrowError::NotFound))));
+}
+
+#[test]
+fn reclaim_milestone_is_blocked_while_paused() {
+    let f = fixture();
+    let admin = Address::generate(&f.env);
+    let dispute = Address::generate(&f.env);
+    f.c().init(&admin, &dispute);
+    let id = f.escrow_with_deadlines(&[(1_000, 2_000)]);
+    f.env.ledger().set_timestamp(2_001);
+
+    f.c().pause();
+    assert!(matches!(
+        f.c().try_reclaim_milestone(&id, &0),
+        Err(Ok(EscrowError::Paused))
+    ));
+
+    f.c().unpause();
+    f.c().reclaim_milestone(&id, &0);
+    assert_eq!(f.balance(&f.escrow), 0);
+}
+
+// ---------------------------------------------------------------------------
 // reclaim_after_dispute_timeout
 // ---------------------------------------------------------------------------
 
@@ -1733,6 +1992,17 @@ fn set_dispute_timeout_requires_admin_auth() {
     init_escrow(&f, &admin, &dispute);
     f.env.set_auths(&[]);
     f.c().set_dispute_timeout(&120);
+}
+
+#[test]
+#[should_panic]
+fn reclaim_milestone_requires_client_auth() {
+    // Only the client's authorization can release funds back to the client.
+    let f = fixture();
+    let id = f.escrow_with_deadlines(&[(1_000, 2_000)]);
+    f.env.ledger().set_timestamp(2_001);
+    f.env.set_auths(&[]);
+    f.c().reclaim_milestone(&id, &0);
 }
 
 #[test]

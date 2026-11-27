@@ -116,9 +116,16 @@ export interface OpenDisputeResult {
  * not here: they are public, so they are not tracked as an operation and never
  * gate a background poll.
  */
-export type OpKind = "create" | "release" | "dispute" | "reclaim" | "rate";
+export type OpKind = "create" | "release" | "dispute" | "reclaim" | "rate" | "cancel";
 
-const WRITE_KINDS: OpKind[] = ["create", "release", "dispute", "reclaim", "rate"];
+const WRITE_KINDS: OpKind[] = [
+  "create",
+  "release",
+  "dispute",
+  "reclaim",
+  "rate",
+  "cancel",
+];
 
 /**
  * `scValToNative` decodes the escrow's unit-enum `status` as a one-element array
@@ -476,6 +483,57 @@ export function useEscrow() {
   );
 
   /**
+   * The client reclaims one overdue milestone's unreleased remainder.
+   *
+   * `escrow.reclaim_milestone(escrow_id, milestone_index)` requires the client's
+   * auth on-chain and rejects the call unless the escrow is still `Active`, the
+   * milestone has not been released, and that milestone's own `deadline` has
+   * passed (`NotExpired` before then, and for a milestone with no deadline).
+   * Only `amount - released_amount` is refunded — anything already released
+   * stays with the freelancer — and the milestone is retired so the remainder
+   * can never be paid out later. Reclaiming the last outstanding milestone moves
+   * the escrow to `Refunded`.
+   */
+  const reclaimMilestone = useCallback(
+    (escrowId: bigint, milestoneIndex: number, meta?: ToastMeta) =>
+      run("reclaim", `${escrowId}:${milestoneIndex}`, (pk) =>
+        submit(
+          pk,
+          CONTRACT_ADDRESSES.escrow,
+          "reclaim_milestone",
+          [scU64(escrowId), scU32(milestoneIndex)],
+          "reclaim milestone",
+          meta,
+        ),
+      ),
+    [run, submit],
+  );
+
+  /**
+   * The client closes an unfunded `Created` escrow before any money moves.
+   *
+   * `escrow.cancel(escrow_id)` requires the client's auth on-chain and rejects
+   * every status but `Created` (`InvalidStatus`), so it can never strand funds.
+   * On success the escrow becomes `Cancelled`; the terms stay readable through
+   * `get` for audit. This is the on-chain half of withdrawing a draft job —
+   * `cancelJob()` in lib/api only moves the off-chain row.
+   */
+  const cancelEscrow = useCallback(
+    (escrowId: bigint, meta?: ToastMeta) =>
+      run("cancel", `${escrowId}`, (pk) =>
+        submit(
+          pk,
+          CONTRACT_ADDRESSES.escrow,
+          "cancel",
+          [scU64(escrowId)],
+          "cancel escrow",
+          meta,
+        ),
+      ),
+    [run, submit],
+  );
+
+  /**
    * Rate the counterparty once the escrow is completed.
    *
    * `reputation.submit(rater, ratee, escrow_id, score)` verifies on-chain that
@@ -589,6 +647,8 @@ export function useEscrow() {
     approveDisputeSplit,
     reclaimDisputed,
     reclaimExpired,
+    reclaimMilestone,
+    cancelEscrow,
     submitRating,
     getEscrow,
     getDisputeDeadline,

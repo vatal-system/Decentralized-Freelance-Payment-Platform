@@ -169,9 +169,11 @@ async function put(path: string, body: unknown = {}) {
 // Each build route plus the extra body fields it needs beyond `escrowId`.
 const BUILD_ROUTES: Array<[string, Record<string, unknown>]> = [
   ["/build/fund", {}],
+  ["/build/cancel", {}],
   ["/build/release", { milestoneIndex: 0 }],
   ["/build/reclaim", {}],
   ["/build/reclaim-dispute", {}],
+  ["/build/reclaim-milestone", { milestoneIndex: 0 }],
 ];
 
 for (const [path, extra] of BUILD_ROUTES) {

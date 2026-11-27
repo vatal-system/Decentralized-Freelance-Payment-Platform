@@ -13,8 +13,9 @@
  *
  * Events handled (see docs/EVENTS.md):
  *   escrow     — created, funded, milestones_updated, milestone_released,
- *                dispute_opened, resolved, refunded,
- *                dispute_contract_updated (recognized; no job state to update)
+ *                milestone_reclaimed, cancelled, dispute_opened, resolved,
+ *                refunded, dispute_contract_updated (recognized; no job state
+ *                to update)
  *   dispute    — raised, approved, dispute_resolved
  *   reputation — rated
  *
@@ -625,6 +626,8 @@ export function startDeadLetterRetryWorker(options?: {
  */
 export const EVENT_TOPIC_FIELDS: Record<string, string[]> = {
   milestone_released: ["escrow_id"],
+  milestone_reclaimed: ["escrow_id"],
+  cancelled: ["escrow_id"],
   milestones_updated: ["escrow_id"],
   dispute_opened: ["escrow_id"],
   resolved: ["escrow_id"],
@@ -679,6 +682,12 @@ export async function dispatchEvent(
       break;
     case "milestone_released":
       await handleMilestoneReleased(data, store as unknown as MilestoneReleaseStores);
+      break;
+    case "milestone_reclaimed":
+      await handleMilestoneReclaimed(data, store as unknown as MilestoneSettlementStores);
+      break;
+    case "cancelled":
+      await handleCancelled(escrowId, store as unknown as CancelledStores);
       break;
     case "dispute_opened":
       await handleDisputeOpened(store as unknown as DisputeLifecycleStores, data);
@@ -743,6 +752,7 @@ function asAddress(value: unknown): string | null {
 const EVENT_AMOUNT_FIELDS: Record<string, string[]> = {
   funded: ["amount"],
   milestone_released: ["amount"],
+  milestone_reclaimed: ["amount"],
   refunded: ["amount"],
   // The two shares are what the ruling actually distributed.
   resolved: ["client_share", "freelancer_share"],
@@ -1147,8 +1157,120 @@ async function handleResolved(
 }
 
 /**
+ * The store `handleMilestoneReclaimed` writes through: the job's milestones so
+ * the settlement can be told apart from a release, and the one milestone row it
+ * marks settled.
+ */
+export interface MilestoneSettlementStores {
+  job: {
+    findUnique(args: {
+      where: { escrowId: bigint };
+      include?: unknown;
+    }): Promise<{
+      id: string;
+      milestones: Array<{
+        id: string;
+        index: number;
+        status: MilestoneStatus;
+        amount: { toString(): string } | string | number;
+      }>;
+    } | null>;
+    update(args: {
+      where: { id: string };
+      data: { status: JobStatus };
+    }): Promise<unknown>;
+  };
+  milestone: {
+    update(args: {
+      where: { id: string };
+      data: { status: MilestoneStatus; releasedAt: Date; releasedAmount: string };
+    }): Promise<unknown>;
+  };
+}
+
+/**
+ * `milestone_reclaimed` — the client took back one overdue milestone's
+ * unreleased remainder (`escrow.reclaim_milestone`).
+ *
+ * On chain the milestone is settled (`released_amount == amount`), but the money
+ * went to the *client*, not the freelancer. The mirror therefore marks it
+ * RELEASED with the whole amount, rather than running the running-total
+ * arithmetic of `handleMilestoneReleased`: that would count the refund as a
+ * payment and leave the milestone looking partly unpaid.
+ *
+ * Reclaiming one milestone leaves the rest of the escrow running, so the job
+ * only becomes REFUNDED when no unreleased milestone is left — the same
+ * condition the contract uses to move the escrow to `Refunded`.
+ */
+export async function handleMilestoneReclaimed(
+  data: Record<string, unknown>,
+  store: MilestoneSettlementStores = prisma as unknown as MilestoneSettlementStores,
+): Promise<void> {
+  const escrowId = asBigInt(data.escrow_id);
+  const index = asNumber(data.index);
+  if (escrowId === null || index === null) return;
+
+  const job = await store.job.findUnique({
+    where: { escrowId },
+    include: { milestones: true },
+  });
+  if (!job) return;
+
+  const milestone = job.milestones.find((m) => m.index === index);
+  if (!milestone) return;
+
+  await store.milestone.update({
+    where: { id: milestone.id },
+    data: {
+      status: "RELEASED",
+      releasedAt: new Date(),
+      // The reclaim settled the milestone in full, so nothing further is owed.
+      releasedAmount: milestone.amount.toString(),
+    },
+  });
+
+  const allSettled = job.milestones.every(
+    (m) => m.id === milestone.id || m.status === "RELEASED",
+  );
+  if (allSettled) {
+    await store.job.update({ where: { id: job.id }, data: { status: "REFUNDED" } });
+  }
+}
+
+/** The job slice `handleCancelled` writes through. */
+export interface CancelledStores {
+  job: {
+    updateMany(args: {
+      where: { escrowId: bigint; status: JobStatus };
+      data: { status: JobStatus };
+    }): Promise<unknown>;
+  };
+}
+
+/**
+ * `cancelled` — the client closed an unfunded `Created` escrow
+ * (`escrow.cancel`, Created → Cancelled).
+ *
+ * Only a job still `CREATED` is updated: the contract itself refuses to cancel
+ * anything that was funded, so a well-formed event can only ever describe an
+ * unfunded job. The guard keeps a replayed event from regressing a row that has
+ * since moved on to COMPLETED and back into CANCELLED.
+ */
+export async function handleCancelled(
+  escrowId: bigint | null,
+  store: CancelledStores = prisma as unknown as CancelledStores,
+): Promise<void> {
+  if (escrowId === null) return;
+  await store.job.updateMany({
+    where: { escrowId, status: "CREATED" },
+    data: { status: "CANCELLED" },
+  });
+}
+
+/**
  * `refunded` is emitted by both `reclaim_expired` (Active → Refunded) and
- * `reclaim_after_dispute_timeout` (Disputed → Refunded).
+ * `reclaim_after_dispute_timeout` (Disputed → Refunded), and by
+ * `reclaim_milestone` once it settles the last outstanding milestone.
  *
  * The escrow is now terminal, so no later event will ever close the dispute it
  * was tied to. Left alone, the row keeps status RAISED/UNDER_REVIEW with

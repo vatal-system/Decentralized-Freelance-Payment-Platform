@@ -7,10 +7,12 @@
  *
  * POST /api/escrow/build/create            — build escrow.create() tx
  * POST /api/escrow/build/fund              — build escrow.fund() tx
+ * POST /api/escrow/build/cancel            — build escrow.cancel() tx
  * POST /api/escrow/build/release           — build escrow.release_milestone() tx
  * POST /api/escrow/build/release-partial   — build escrow.release_partial() tx
  * POST /api/escrow/build/reclaim           — build escrow.reclaim_expired() tx
  * POST /api/escrow/build/reclaim-dispute   — build escrow.reclaim_after_dispute_timeout() tx
+ * POST /api/escrow/build/reclaim-milestone — build escrow.reclaim_milestone() tx
  * POST /api/escrow/build/update-milestones — build escrow.update_milestones() tx
  * PUT  /api/escrow/:escrowId/milestones    — record a confirmed milestone edit
  * GET  /api/escrow/:escrowId/receipt       — printable receipt for one escrow
@@ -23,9 +25,11 @@ import { Contract } from "@stellar/stellar-sdk";
 import { config } from "../config";
 import { buildCreateArgs, buildUpdateMilestonesArgs } from "../lib/escrowArgs";
 import {
+  buildCancelArgs,
   buildFundArgs,
   buildReclaimArgs,
   buildReclaimDisputeArgs,
+  buildReclaimMilestoneArgs,
   buildReleaseMilestoneArgs,
   buildReleasePartialArgs,
 } from "../lib/scval";
@@ -464,6 +468,26 @@ escrowRouter.post("/build/fund", requireAuth, validate(z.object({ escrowId: escr
   }
 });
 
+// POST /api/escrow/build/cancel
+//
+// Closes an unfunded `Created` escrow on-chain (`Created → Cancelled`). The
+// contract is the authority: it requires the client's auth and rejects every
+// other status, so the route only encodes the `u64` argument. This is the
+// on-chain half of withdrawing a draft job; `POST /api/jobs/:id/cancel` only
+// moves the off-chain row.
+escrowRouter.post("/build/cancel", requireAuth, validate(z.object({ escrowId: escrowIdSchema })), async (req, res, next) => {
+  try {
+    const contract = new Contract(config.ESCROW_CONTRACT_ID);
+    const xdr = await buildTx(
+      res.locals.stellarAddress,
+      contract.call("cancel", ...buildCancelArgs(req.body.escrowId)),
+    );
+    res.json({ xdr });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/escrow/build/release
 export const releaseSchema = z.object({ escrowId: escrowIdSchema, milestoneIndex: z.number().int().min(0) });
 
@@ -570,6 +594,44 @@ escrowRouter.post(
         contract.call(
           "reclaim_after_dispute_timeout",
           ...buildReclaimDisputeArgs(req.body.escrowId),
+        ),
+      );
+      res.json({ xdr });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /api/escrow/build/reclaim-milestone
+//
+// Per-milestone reclaim: once a single milestone's own `deadline` has passed
+// unpaid, the client can take back just its unreleased remainder instead of
+// waiting for the escrow-level `expiry` (`reclaim_expired`). The contract is the
+// authority on all preconditions — client auth, still `Active`, milestone not
+// released, deadline passed — and on the amount, which is always
+// `amount - released_amount`, so the route only encodes the two arguments. A
+// milestone with no deadline returns `NotExpired`, exactly as an early call does.
+export const reclaimMilestoneSchema = z.object({
+  escrowId: escrowIdSchema,
+  milestoneIndex: z.number().int().nonnegative(),
+});
+
+escrowRouter.post(
+  "/build/reclaim-milestone",
+  requireAuth,
+  validate(reclaimMilestoneSchema),
+  async (req, res, next) => {
+    try {
+      const { escrowId, milestoneIndex } = req.body as z.infer<
+        typeof reclaimMilestoneSchema
+      >;
+      const contract = new Contract(config.ESCROW_CONTRACT_ID);
+      const xdr = await buildTx(
+        res.locals.stellarAddress,
+        contract.call(
+          "reclaim_milestone",
+          ...buildReclaimMilestoneArgs(escrowId, milestoneIndex),
         ),
       );
       res.json({ xdr });

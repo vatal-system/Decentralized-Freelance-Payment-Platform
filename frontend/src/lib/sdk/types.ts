@@ -11,6 +11,7 @@ export enum EscrowStatus {
   Completed = "Completed",
   Disputed = "Disputed",
   Refunded = "Refunded",
+  Cancelled = "Cancelled",
 }
 
 export enum DisputeStatus {

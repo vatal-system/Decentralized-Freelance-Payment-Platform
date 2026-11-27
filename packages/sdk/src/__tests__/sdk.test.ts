@@ -16,6 +16,8 @@ import {
   buildReleasePartialArgs,
   buildReclaimArgs,
   buildReclaimDisputeArgs,
+  buildReclaimMilestoneArgs,
+  buildCancelArgs,
   buildOpenDisputeArgs,
   buildReputationSubmitArgs,
   buildRaiseArgs,
@@ -120,6 +122,22 @@ describe("Contract argument builders", () => {
 
   it("buildReclaimDisputeArgs builds [scU64]", () => {
     const args = buildReclaimDisputeArgs(10n);
+    expect(args).toHaveLength(1);
+    expect(args[0].switch()).toBe(xdr.ScValType.scvU64());
+  });
+
+  it("buildReclaimMilestoneArgs builds [scU64, scU32]", () => {
+    // Distinct from the escrow-level refunds above: the milestone index must be
+    // encoded as u32 or Soroban rejects the call before the body runs.
+    const args = buildReclaimMilestoneArgs(10n, 3);
+    expect(args).toHaveLength(2);
+    expect(args[0].switch()).toBe(xdr.ScValType.scvU64());
+    expect(args[1].switch()).toBe(xdr.ScValType.scvU32());
+    expect(args[1].u32()).toBe(3);
+  });
+
+  it("buildCancelArgs builds [scU64]", () => {
+    const args = buildCancelArgs(10n);
     expect(args).toHaveLength(1);
     expect(args[0].switch()).toBe(xdr.ScValType.scvU64());
   });
@@ -233,6 +251,14 @@ describe("Typed Contract Clients", () => {
     const relInv = client.releaseMilestone(42n, 0);
     expect(relInv.method).toBe("release_milestone");
     expect(relInv.args).toHaveLength(2);
+
+    const reclaimInv = client.reclaimMilestone(42n, 1);
+    expect(reclaimInv.method).toBe("reclaim_milestone");
+    expect(reclaimInv.args).toHaveLength(2);
+
+    const cancelInv = client.cancel(42n);
+    expect(cancelInv.method).toBe("cancel");
+    expect(cancelInv.args).toHaveLength(1);
   });
 
   it("DisputeClient generates properly structured invocations", () => {

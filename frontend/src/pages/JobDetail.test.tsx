@@ -11,6 +11,8 @@ const h = vi.hoisted(() => ({
     openDispute: vi.fn(),
     reclaimDisputed: vi.fn(),
     reclaimExpired: vi.fn(),
+    reclaimMilestone: vi.fn(),
+    cancelEscrow: vi.fn(),
     submitRating: vi.fn(),
     getDisputeDeadline: vi.fn(),
     getArbitrators: vi.fn(async () => ["GARB1", "GARB2", "GARB3"]),
@@ -144,6 +146,10 @@ beforeEach(() => {
   h.escrow.reclaimDisputed.mockResolvedValue({ hash: "RECLAIMHASH", result: undefined });
   h.escrow.reclaimExpired.mockReset();
   h.escrow.reclaimExpired.mockResolvedValue({ hash: "RECLAIMEXPIREDHASH", result: undefined });
+  h.escrow.reclaimMilestone.mockReset();
+  h.escrow.reclaimMilestone.mockResolvedValue({ hash: "RECLAIMMILESTONEHASH", result: undefined });
+  h.escrow.cancelEscrow.mockReset();
+  h.escrow.cancelEscrow.mockResolvedValue({ hash: "CANCELEXHASH", result: undefined });
   h.escrow.getDisputeDeadline.mockReset();
   h.escrow.getDisputeDeadline.mockResolvedValue(BigInt(nowSeconds() + 3 * 86_400));
   h.escrow.getArbitrators.mockReset();
@@ -455,6 +461,142 @@ describe("JobDetail dispute timelock", () => {
 
     await screen.findByText(/frozen pending arbitration/i);
     expect(screen.queryByRole("button", { name: "Reclaim after timeout" })).toBeNull();
+  });
+});
+
+describe("JobDetail per-milestone reclaim (#402)", () => {
+  /** Two funded milestones: the first overdue, the second still current. */
+  const twoMilestones = {
+    ...ACTIVE,
+    milestones: [
+      {
+        amount: 10_000_000n,
+        released: false,
+        released_amount: 0n,
+        deadline: BigInt(nowSeconds() - 60),
+      },
+      {
+        amount: 10_000_000n,
+        released: false,
+        released_amount: 0n,
+        deadline: BigInt(nowSeconds() + 86_400),
+      },
+    ],
+  };
+
+  it("shows a reclaim button for the client on an overdue milestone", async () => {
+    h.escrow.getEscrow.mockResolvedValue(twoMilestones);
+    h.wallet.publicKey = CLIENT;
+    render(<JobDetail />);
+
+    await screen.findByRole("button", { name: "Reclaim milestone" });
+  });
+
+  it("does not offer reclaim while the milestone deadline is still ahead", async () => {
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
+    h.wallet.publicKey = CLIENT;
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Reclaim milestone" })).toBeNull();
+  });
+
+  it("does not offer reclaim to the freelancer", async () => {
+    h.escrow.getEscrow.mockResolvedValue(twoMilestones);
+    h.wallet.publicKey = FREELANCER;
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Reclaim milestone" })).toBeNull();
+  });
+
+  it("does not offer reclaim on a milestone that is already released", async () => {
+    h.escrow.getEscrow.mockResolvedValue({
+      ...twoMilestones,
+      milestones: [
+        {
+          amount: 10_000_000n,
+          released: true,
+          released_amount: 10_000_000n,
+          deadline: BigInt(nowSeconds() - 60),
+        },
+      ],
+    });
+    h.wallet.publicKey = CLIENT;
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Reclaim milestone" })).toBeNull();
+  });
+
+  it("confirms before submitting escrow.reclaim_milestone", async () => {
+    h.escrow.getEscrow.mockResolvedValue(twoMilestones);
+    h.wallet.publicKey = CLIENT;
+    render(<JobDetail />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reclaim milestone" }));
+    // Nothing is submitted until the confirmation modal is accepted.
+    expect(h.escrow.reclaimMilestone).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Milestone Reclaim" }));
+
+    await waitFor(() => expect(h.escrow.reclaimMilestone).toHaveBeenCalledWith(7n, 0));
+    const tx = await screen.findByRole("link", { name: /RECLAIMMILES/ });
+    expect(tx.getAttribute("href")).toBe(
+      "https://stellar.expert/tx/RECLAIMMILESTONEHASH",
+    );
+  });
+});
+
+describe("JobDetail unfunded cancellation (#402)", () => {
+  /** An escrow that was created but never funded. */
+  const CREATED = {
+    ...COMPLETED,
+    status: "Created",
+    milestones: [
+      { amount: 20_000_000n, released: false, released_amount: 0n, deadline: 0n },
+    ],
+  };
+
+  it("offers the client a cancel action on an unfunded escrow", async () => {
+    h.escrow.getEscrow.mockResolvedValue(CREATED);
+    h.wallet.publicKey = CLIENT;
+    render(<JobDetail />);
+
+    await screen.findByRole("button", { name: "Cancel escrow" });
+  });
+
+  it("does not offer cancellation to the freelancer", async () => {
+    h.escrow.getEscrow.mockResolvedValue(CREATED);
+    h.wallet.publicKey = FREELANCER;
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Cancel escrow" })).toBeNull();
+  });
+
+  it("does not offer cancellation once the escrow is funded", async () => {
+    h.escrow.getEscrow.mockResolvedValue(ACTIVE);
+    h.wallet.publicKey = CLIENT;
+    render(<JobDetail />);
+
+    await screen.findByText("Milestones");
+    expect(screen.queryByRole("button", { name: "Cancel escrow" })).toBeNull();
+  });
+
+  it("confirms before submitting escrow.cancel and then refreshes the escrow", async () => {
+    h.escrow.getEscrow.mockResolvedValue(CREATED);
+    h.wallet.publicKey = CLIENT;
+    render(<JobDetail />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel escrow" }));
+    expect(h.escrow.cancelEscrow).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Cancellation" }));
+
+    await waitFor(() => expect(h.escrow.cancelEscrow).toHaveBeenCalledWith(7n));
+    const tx = await screen.findByRole("link", { name: /CANCELEX/ });
+    expect(tx.getAttribute("href")).toBe("https://stellar.expert/tx/CANCELEXHASH");
   });
 });
 
