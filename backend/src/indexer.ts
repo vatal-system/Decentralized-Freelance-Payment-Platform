@@ -71,6 +71,8 @@ import {
 import { invalidateFreelancerDirectory } from "./lib/cache";
 import { dispatchWebhooksForEvent } from "./lib/webhooks";
 import { checkIndexerLagAlert } from "./lib/alerts";
+import { randomUUID } from "node:crypto";
+import { logger, runWithContext } from "./lib/logger";
 
 /** Re-exported for callers (and tests) that work with raw contract events. */
 export type { ContractEventLike } from "./lib/events";
@@ -237,6 +239,8 @@ export function startIndexer() {
 }
 
 async function poll() {
+  const correlationId = "indexer-poll-" + randomUUID();
+  return runWithContext({ correlationId }, async () => {
   try {
     const row = await prisma.indexerCursor.upsert({
       where: { id: CURSOR_ID },
@@ -282,8 +286,9 @@ async function poll() {
       console.error("[indexer] Alert check error:", alertErr);
     }
   } catch (err) {
-    console.error("[indexer] Poll error:", err);
+    logger.error("Indexer poll error", { error: err });
   }
+  });
 }
 
 /**
@@ -368,12 +373,12 @@ export async function processContractEvents(
         await dispatch(event);
       } catch (err) {
         // One bad event must not block the rest of the batch.
-        console.error(`[indexer] failed to process event ${event.id ?? "?"}`, err);
+        logger.error(`failed to process event ${event.id ?? "?"}`, { event: "indexer_event_failed", eventId: event.id, error: err });
         // Recording the failure must never take the poller down with it.
         try {
           await onError(event, err);
         } catch (storeErr) {
-          console.error("[indexer] could not record the failed event", storeErr);
+          logger.error("could not record the failed event", { event: "indexer_dead_letter_store_failed", eventId: event.id, error: storeErr });
         }
       }
     }
@@ -544,7 +549,7 @@ export async function retryDeadLetters(options?: RetryDeadLettersOptions): Promi
       await dispatchEvent(event, options?.store ?? prisma);
       await prisma.indexerDeadLetter.delete({ where: { id: row.id } });
       succeeded++;
-      console.log(`[indexer] Successfully retried dead-letter event ${row.id}`);
+      logger.info(`Successfully retried dead-letter event ${row.id}`, { event: "indexer_dead_letter_retried", deadLetterId: row.id });
     } catch (err) {
       failed++;
       const nextAttempts = row.attempts + 1;
